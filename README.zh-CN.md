@@ -100,9 +100,3 @@ streamlit run app_streamlit.py
 1. 连接仓库。
 2. 入口文件选择 `app_streamlit.py`。
 3. 在平台 Secrets 中配置环境变量。
-
-## 比赛演示建议
-
-- 场景 A：双方距离较远，依然得到公平可达结果。
-- 场景 B：晚高峰同菜系下，系统自动规避高风险排队门店。
-- 场景 C：开启 Surprise 模式，展示探索型推荐能力。

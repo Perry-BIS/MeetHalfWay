@@ -100,9 +100,3 @@ Recommended target: Streamlit Community Cloud
 1. Connect this repository.
 2. Set entry file to `app_streamlit.py`.
 3. Configure secrets in the platform settings.
-
-## Demo Script Suggestions
-
-- Scenario A: Two users far apart; show fairness-preserving overlap recommendations.
-- Scenario B: Peak dining time; show automatic risk-aware reranking.
-- Scenario C: Surprise mode; show exploration-oriented recommendation.
