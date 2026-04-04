@@ -1,0 +1,21 @@
+# Python cache and virtualenv
+__pycache__/
+*.py[cod]
+.venv/
+
+# Local secrets
+.env
+.streamlit/secrets.toml
+.streamlit/
+
+# Editor/runtime artifacts
+*.log
+desktop.ini
+
+# Local runtime state / personal traces
+room_state.json
+meethalfway_map.html
+feedback.txt
+
+# Local helper scripts not needed for release
+fix_*.py

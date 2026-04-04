@@ -1,0 +1,19 @@
+# Core
+requests>=2.32.0
+python-dotenv>=1.0.1
+openai>=1.51.0
+
+# Async HTTP（并发 Web 采集，替代串行 requests 循环）
+httpx>=0.27.0
+ddgs>=6.3.0
+
+# 地理空间（等时线多边形求交）
+shapely>=2.0.0
+
+# 交互式地图可视化
+folium>=0.17.0
+
+# Web 可视化平台
+streamlit>=1.40.0
+streamlit-folium>=0.23.0
+streamlit-js-eval>=1.0.0
