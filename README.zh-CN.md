@@ -87,7 +87,6 @@ streamlit run app_streamlit.py
 - `meethalfway.py`：核心算法与评分逻辑
 - `requirements.txt`：依赖清单
 - `.env.example`：环境变量模板
-- `matlab_python_converted/`：算法迁移与实验模块
 
 ## 隐私与安全说明
 

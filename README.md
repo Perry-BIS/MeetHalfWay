@@ -94,7 +94,6 @@ streamlit run app_streamlit.py
 - `meethalfway.py`: core algorithm and scoring
 - `requirements.txt`: dependency list
 - `.env.example`: environment template
-- `matlab_python_converted/`: migrated algorithm experiments
 
 ## Privacy & Security Notes
 
