@@ -4,7 +4,7 @@
 
 </div>
 
-# MeetHalfway AI
+# MeetHalfway 
 
 A fair, real-time, and explainable meeting-place recommendation engine for two people.
 
