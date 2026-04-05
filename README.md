@@ -12,6 +12,9 @@ A fair, real-time, and explainable meeting-place recommendation engine for two p
 ![Streamlit](https://img.shields.io/badge/Streamlit-App-FF4B4B?logo=streamlit&logoColor=white)
 ![Status](https://img.shields.io/badge/Status-Competition%20Ready-0A7B83)
 
+<img width="1199" height="1199" alt="image" src="https://github.com/user-attachments/assets/727e6737-c900-47cb-9d3d-e92fe9bb6d35" />
+
+
 ## Why This Project Stands Out
 
 MeetHalfway AI does more than compute a geometric midpoint. It enforces fairness through isochrone intersection (both users can reasonably reach the area), then combines live status signals, crowding/queue risk, and reputation factors into a practical and explainable recommendation.
