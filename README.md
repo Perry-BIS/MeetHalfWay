@@ -19,6 +19,12 @@ A fair, real-time, and explainable meeting-place recommendation engine for two p
 
 MeetHalfway AI does more than compute a geometric midpoint. It enforces fairness through isochrone intersection (both users can reasonably reach the area), then combines live status signals, crowding/queue risk, and reputation factors into a practical and explainable recommendation.
 
+ not only considers the common factors like "where to meet" and "when to meet," but also incorporates additional criteria such as:  
+- Travel radius tolerance,  
+- Availability overlap,  
+- Venue popularity and density,  
+- Mutual voting preferences.  
+
 ## Key Highlights
 
 - Fairness by travel time: optimize the balance, not just map distance.
