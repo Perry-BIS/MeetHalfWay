@@ -4,7 +4,7 @@
 
 </div>
 
-# MeetHalfway AI
+# MeetHalfway 
 
 一个面向双人场景的公平、实时、可解释的约饭选址推荐引擎。
 
