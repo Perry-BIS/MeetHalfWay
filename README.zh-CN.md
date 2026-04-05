@@ -12,6 +12,8 @@
 ![Streamlit](https://img.shields.io/badge/Streamlit-App-FF4B4B?logo=streamlit&logoColor=white)
 ![Status](https://img.shields.io/badge/Status-Competition%20Ready-0A7B83)
 
+<img width="1199" height="1199" alt="image" src="https://github.com/user-attachments/assets/d3ed5522-4b2f-42d9-bcd1-2ee482e40ead" />
+
 ## 项目亮点
 
 MeetHalfway AI 不只是算地理中点，而是先用等时线交集保证双方都“可达”，再融合营业状态、拥挤与排队风险、口碑评价等信号，输出更接近真实决策场景的推荐结果。
