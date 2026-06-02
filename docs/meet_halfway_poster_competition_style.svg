@@ -1,0 +1,361 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1800" height="2700" viewBox="0 0 1800 2700">
+  <defs>
+    <linearGradient id="headerGrad" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#12385c"/>
+      <stop offset="55%" stop-color="#1f4f79"/>
+      <stop offset="100%" stop-color="#0d2d49"/>
+    </linearGradient>
+    <linearGradient id="lightBlue" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#f7fbff"/>
+      <stop offset="100%" stop-color="#eef5fb"/>
+    </linearGradient>
+    <filter id="cardShadow" x="-20%" y="-20%" width="140%" height="160%">
+      <feDropShadow dx="0" dy="6" stdDeviation="10" flood-color="#5b7694" flood-opacity="0.16"/>
+    </filter>
+    <style>
+      .bg { fill: #ffffff; }
+      .title { font: 700 50px 'Arial', 'Segoe UI', sans-serif; fill: #ffffff; }
+      .subtitle { font: 400 19px 'Arial', 'Segoe UI', sans-serif; fill: #dceaf7; }
+      .smallhead { font: 700 18px 'Arial', 'Segoe UI', sans-serif; fill: #f2f8ff; }
+      .sectionbar { fill: #2f5f8d; rx: 10; }
+      .sectiontext { font: 700 24px 'Arial', 'Segoe UI', sans-serif; fill: #ffffff; }
+      .body { font: 400 17px 'Arial', 'Segoe UI', sans-serif; fill: #16324c; }
+      .bodysmall { font: 400 15px 'Arial', 'Segoe UI', sans-serif; fill: #284761; }
+      .bodytiny { font: 400 13px 'Arial', 'Segoe UI', sans-serif; fill: #47637b; }
+      .bold { font-weight: 700; }
+      .card { fill: #ffffff; stroke: #d5e0ea; stroke-width: 1.8; rx: 16; filter: url(#cardShadow); }
+      .soft { fill: url(#lightBlue); stroke: #d5e0ea; stroke-width: 1.4; rx: 14; }
+      .line { stroke: #6c88a2; stroke-width: 3; fill: none; }
+      .dash { stroke-dasharray: 10 8; }
+      .chip { fill: #e9f2fa; stroke: #bfd3e6; stroke-width: 1; rx: 14; }
+      .bluebox { fill: #f3f8fd; stroke: #bcd0e3; stroke-width: 1.5; rx: 14; }
+      .deep { fill: #173d61; }
+      .accent { fill: #2b6da6; }
+      .white { fill: #ffffff; }
+    </style>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="9" markerHeight="9" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#54728f"/>
+    </marker>
+  </defs>
+
+  <rect class="bg" x="0" y="0" width="1800" height="2700"/>
+
+  <rect x="0" y="0" width="1800" height="230" fill="url(#headerGrad)"/>
+  <rect x="36" y="28" width="180" height="66" fill="#ffffff" opacity="0.92" rx="8"/>
+  <text x="58" y="72" style="font:700 34px Arial, sans-serif; fill:#1c4c77;">MeetHalfway</text>
+  <text x="245" y="65" class="title">MeetHalfway AI: Fair, Real-Time, Explainable Meeting-Place Recommendation</text>
+  <text x="245" y="103" class="subtitle">A competition-style poster for a Streamlit + Python decision-support system that helps two people find a practical halfway venue</text>
+  <text x="245" y="140" class="smallhead">Core idea: travel-time fairness + live venue signals + explainable ranking</text>
+  <text x="245" y="170" class="smallhead">Repository basis: README, app_streamlit.py, app_streamlit_new.py, meethalfway.py</text>
+  <text x="1430" y="70" style="font:700 28px Arial, sans-serif; fill:#ffffff;">AI/DS</text>
+  <text x="1430" y="108" style="font:400 18px Arial, sans-serif; fill:#dfeaf5;">Hackathon Poster Style</text>
+  <text x="1430" y="140" style="font:400 18px Arial, sans-serif; fill:#dfeaf5;">White academic layout</text>
+
+  <line x1="450" y1="250" x2="450" y2="2640" stroke="#d7e1ea" stroke-width="2"/>
+  <line x1="900" y1="250" x2="900" y2="2640" stroke="#d7e1ea" stroke-width="2"/>
+  <line x1="1350" y1="250" x2="1350" y2="2640" stroke="#d7e1ea" stroke-width="2"/>
+
+  <rect x="28" y="250" width="1744" height="18" fill="#2c5e8a"/>
+
+  <!-- Column 1 -->
+  <rect x="52" y="292" width="374" height="42" class="sectionbar"/>
+  <text x="72" y="321" class="sectiontext">Background &amp; Motivation</text>
+
+  <rect x="52" y="354" width="374" height="268" class="card"/>
+  <text x="72" y="390" class="body">
+    <tspan x="72" dy="0">Meeting halfway is usually handled badly: people eyeball a midpoint,</tspan>
+    <tspan x="72" dy="26">ignore travel-time asymmetry, and still need to manually check whether</tspan>
+    <tspan x="72" dy="26">a place is open, crowded, or practical.</tspan>
+    <tspan x="72" dy="34" class="bold">MeetHalfway AI</tspan>
+    <tspan dy="0"> turns this into an explainable recommendation workflow.</tspan>
+    <tspan x="72" dy="26">Instead of a naive geographic midpoint, it computes a fair reachable zone</tspan>
+    <tspan x="72" dy="26">from two users, retrieves candidates, enriches them with live signals,</tspan>
+    <tspan x="72" dy="26">and ranks venues with a transparent scoring breakdown.</tspan>
+  </text>
+
+  <rect x="52" y="648" width="374" height="42" class="sectionbar"/>
+  <text x="72" y="677" class="sectiontext">Why It Stands Out</text>
+
+  <rect x="52" y="710" width="374" height="310" class="card"/>
+  <rect x="72" y="735" width="334" height="48" class="chip"/>
+  <text x="92" y="766" class="body">Fairness is based on <tspan class="bold">travel-time intersection</tspan>, not visual midpoint.</text>
+  <rect x="72" y="796" width="334" height="48" class="chip"/>
+  <text x="92" y="827" class="body">Candidates are adjusted by <tspan class="bold">open/closed, queue, crowd, risk</tspan>.</text>
+  <rect x="72" y="857" width="334" height="48" class="chip"/>
+  <text x="92" y="888" class="body">Ranking remains <tspan class="bold">explainable</tspan> instead of black-box only.</text>
+  <rect x="72" y="918" width="334" height="48" class="chip"/>
+  <text x="92" y="949" class="body">Strong engineering fallback chain keeps the demo stable.</text>
+  <text x="72" y="995" class="bodysmall">Project language from the repository:</text>
+  <text x="72" y="1022" class="bodytiny">• fairness by travel time</text>
+  <text x="72" y="1044" class="bodytiny">• real-world decision quality</text>
+  <text x="72" y="1066" class="bodytiny">• async concurrency + retries + fallbacks</text>
+
+  <rect x="52" y="1048" width="374" height="42" class="sectionbar"/>
+  <text x="72" y="1077" class="sectiontext">Product Flow</text>
+
+  <rect x="52" y="1108" width="374" height="405" class="card"/>
+  <rect x="84" y="1142" width="310" height="56" class="bluebox"/>
+  <text x="104" y="1177" class="body"><tspan class="bold">1.</tspan> Collect two user locations and preferences</text>
+  <path d="M239 1198 L239 1230" class="line" marker-end="url(#arrow)"/>
+  <rect x="84" y="1240" width="310" height="56" class="bluebox"/>
+  <text x="104" y="1275" class="body"><tspan class="bold">2.</tspan> Build isochrones and overlap area</text>
+  <path d="M239 1296 L239 1328" class="line" marker-end="url(#arrow)"/>
+  <rect x="84" y="1338" width="310" height="56" class="bluebox"/>
+  <text x="104" y="1373" class="body"><tspan class="bold">3.</tspan> Search venue candidates near fair center</text>
+  <path d="M239 1394 L239 1426" class="line" marker-end="url(#arrow)"/>
+  <rect x="84" y="1436" width="310" height="56" class="bluebox"/>
+  <text x="104" y="1471" class="body"><tspan class="bold">4.</tspan> Enrich with live web signals and semantics</text>
+
+  <rect x="52" y="1540" width="374" height="42" class="sectionbar"/>
+  <text x="72" y="1569" class="sectiontext">Privacy &amp; Reliability</text>
+
+  <rect x="52" y="1600" width="374" height="232" class="card"/>
+  <text x="72" y="1636" class="bodytiny">• User coordinates are intended for in-session processing only.</text>
+  <text x="72" y="1662" class="bodytiny">• `room_state.json` stores collaboration state for the richer app flow.</text>
+  <text x="72" y="1688" class="bodytiny">• API instability is handled with retries and graceful fallbacks.</text>
+  <text x="72" y="1714" class="bodytiny">• Search fallback chain: Mapbox → Overpass → OSM.</text>
+  <text x="72" y="1740" class="bodytiny">• Semantic fallback chain: OpenAI-compatible model → keyword extraction.</text>
+
+  <rect x="88" y="1778" width="300" height="34" fill="#2f5f8d" rx="7"/>
+  <text x="106" y="1801" style="font:700 16px Arial, sans-serif; fill:#fff;">Competition Readiness</text>
+  <text x="72" y="1828" class="bodytiny">Streamlit UI + interactive map + top picks + surprise mode</text>
+
+  <!-- Column 2 -->
+  <rect x="502" y="292" width="374" height="42" class="sectionbar"/>
+  <text x="522" y="321" class="sectiontext">System Architecture</text>
+
+  <rect x="502" y="354" width="374" height="760" class="card"/>
+  <rect x="532" y="388" width="314" height="68" class="deep" rx="12"/>
+  <text x="550" y="417" style="font:700 18px Arial, sans-serif; fill:#fff;">User Layer</text>
+  <text x="550" y="442" style="font:400 15px Arial, sans-serif; fill:#e6f0f8;">A/B users provide address, GPS, time slots, budget, votes</text>
+
+  <path d="M689 456 L689 494" class="line" marker-end="url(#arrow)"/>
+
+  <rect x="532" y="504" width="314" height="92" class="soft"/>
+  <text x="550" y="534" class="body"><tspan class="bold">Streamlit UI</tspan></text>
+  <text x="550" y="560" class="bodytiny">`app_streamlit.py` for demo presentation</text>
+  <text x="550" y="584" class="bodytiny">`app_streamlit_new.py` for room-based multi-step flow</text>
+
+  <path d="M689 596 L689 634" class="line" marker-end="url(#arrow)"/>
+
+  <rect x="532" y="644" width="314" height="104" class="soft"/>
+  <text x="550" y="674" class="body"><tspan class="bold">Application Orchestration</tspan></text>
+  <text x="550" y="700" class="bodytiny">Session state, invite links, room join, vote persistence,</text>
+  <text x="550" y="722" class="bodytiny">combined preference summary, result invalidation</text>
+
+  <path d="M689 748 L689 786" class="line" marker-end="url(#arrow)"/>
+
+  <rect x="532" y="796" width="314" height="128" class="soft"/>
+  <text x="550" y="826" class="body"><tspan class="bold">Recommendation Engine</tspan></text>
+  <text x="550" y="852" class="bodytiny">`MeetHalfwayRecommender`</text>
+  <text x="550" y="874" class="bodytiny">geocoding, midpoint weighting, isochrone overlap,</text>
+  <text x="550" y="896" class="bodytiny">candidate search, web enrichment, scoring, explanations</text>
+
+  <path d="M689 924 L689 962" class="line" marker-end="url(#arrow)"/>
+
+  <rect x="532" y="972" width="314" height="104" class="soft"/>
+  <text x="550" y="1002" class="body"><tspan class="bold">Output Layer</tspan></text>
+  <text x="550" y="1028" class="bodytiny">Ranked recommendations, fairness explanation,</text>
+  <text x="550" y="1050" class="bodytiny">Folium map, cards, result pages, surprise recommendation</text>
+
+  <rect x="502" y="1140" width="374" height="42" class="sectionbar"/>
+  <text x="522" y="1169" class="sectiontext">Search &amp; Fallback Chain</text>
+
+  <rect x="502" y="1200" width="374" height="390" class="card"/>
+  <text x="522" y="1235" class="body"><tspan class="bold">Geocoding</tspan>: Mapbox Geocoding → OSM Nominatim</text>
+  <text x="522" y="1270" class="body"><tspan class="bold">Isochrone</tspan>: Mapbox / ORS → circle approximation</text>
+  <text x="522" y="1305" class="body"><tspan class="bold">Place Search</tspan>: Mapbox POI → Overpass → OSM</text>
+  <text x="522" y="1340" class="body"><tspan class="bold">Live Signals</tspan>: Tavily → DuckDuckGo</text>
+  <text x="522" y="1375" class="body"><tspan class="bold">Semantic Parsing</tspan>: OpenAI-compatible LLM → keywords</text>
+
+  <rect x="532" y="1410" width="314" height="52" class="bluebox"/>
+  <text x="552" y="1443" class="bodysmall">Goal: the demo still works even if one API is missing.</text>
+  <rect x="532" y="1480" width="314" height="82" class="bluebox"/>
+  <text x="552" y="1510" class="bodytiny">Concurrency stack from repository:</text>
+  <text x="552" y="1534" class="bodytiny">• `asyncio` + `httpx`</text>
+  <text x="552" y="1556" class="bodytiny">• semaphores, retry backoff, low-cost mode</text>
+
+  <rect x="502" y="1616" width="374" height="42" class="sectionbar"/>
+  <text x="522" y="1645" class="sectiontext">Technology Stack</text>
+
+  <rect x="502" y="1676" width="374" height="310" class="card"/>
+  <text x="522" y="1714" class="bodytiny">Frontend: Streamlit, streamlit-folium, streamlit-js-eval</text>
+  <text x="522" y="1740" class="bodytiny">Geo: OpenRouteService / Mapbox + Shapely</text>
+  <text x="522" y="1766" class="bodytiny">Retrieval: Mapbox, Overpass, OSM, Tavily, DuckDuckGo</text>
+  <text x="522" y="1792" class="bodytiny">Model: OpenAI-compatible API</text>
+  <text x="522" y="1818" class="bodytiny">Concurrency: asyncio + httpx</text>
+  <text x="522" y="1844" class="bodytiny">Visualization: Folium interactive map</text>
+
+  <rect x="530" y="1876" width="316" height="78" fill="#173d61" rx="10"/>
+  <text x="550" y="1910" style="font:700 18px Arial, sans-serif; fill:#fff;">Repo Structure</text>
+  <text x="550" y="1938" style="font:400 15px Arial, sans-serif; fill:#deebf6;">app_streamlit.py • app_streamlit_new.py • meethalfway.py</text>
+
+  <!-- Column 3 -->
+  <rect x="952" y="292" width="374" height="42" class="sectionbar"/>
+  <text x="972" y="321" class="sectiontext">Fairness-Aware Recommendation Logic</text>
+
+  <rect x="952" y="354" width="374" height="548" class="card"/>
+  <text x="972" y="392" class="body"><tspan class="bold">Step A.</tspan> Resolve two locations</text>
+  <text x="972" y="420" class="bodytiny">Address or GPS is converted into lat/lon</text>
+  <text x="972" y="458" class="body"><tspan class="bold">Step B.</tspan> Estimate a weighted midpoint</text>
+  <text x="972" y="486" class="bodytiny">Bias can shift the center toward a tired or constrained user</text>
+  <text x="972" y="524" class="body"><tspan class="bold">Step C.</tspan> Compute fair overlap area</text>
+  <text x="972" y="552" class="bodytiny">Isochrone(A) ∩ Isochrone(B) = region both can reach reasonably</text>
+  <text x="972" y="590" class="body"><tspan class="bold">Step D.</tspan> Search nearby venue candidates</text>
+  <text x="972" y="618" class="bodytiny">Prioritize the overlap centroid, then retain safe fallbacks</text>
+  <text x="972" y="656" class="body"><tspan class="bold">Step E.</tspan> Enrich each venue with live signals</text>
+  <text x="972" y="684" class="bodytiny">Status, queue risk, crowd level, wait estimate, confidence</text>
+  <text x="972" y="722" class="body"><tspan class="bold">Step F.</tspan> Score and sort</text>
+  <text x="972" y="750" class="bodytiny">Blend distance, rating proxy, fairness, voting, availability, risk</text>
+  <text x="972" y="788" class="body"><tspan class="bold">Step G.</tspan> Explain the outcome</text>
+  <text x="972" y="816" class="bodytiny">Top picks, surprise pick, reasons, and map markers</text>
+
+  <circle cx="1020" cy="852" r="9" fill="#2f5f8d"/>
+  <circle cx="1080" cy="852" r="9" fill="#2f5f8d"/>
+  <circle cx="1140" cy="852" r="9" fill="#2f5f8d"/>
+  <circle cx="1200" cy="852" r="9" fill="#2f5f8d"/>
+
+  <rect x="952" y="928" width="374" height="42" class="sectionbar"/>
+  <text x="972" y="957" class="sectiontext">Scoring Design</text>
+
+  <rect x="952" y="988" width="374" height="540" class="card"/>
+  <rect x="976" y="1014" width="326" height="62" class="bluebox"/>
+  <text x="996" y="1048" class="bodysmall">Final Score = distance + rating + fairness + spatiotemporal bonus</text>
+  <text x="996" y="1068" class="bodytiny">minus closure / queue / risk penalties, plus isochrone reward</text>
+
+  <text x="976" y="1122" class="body"><tspan class="bold">Fairness component</tspan></text>
+  <text x="976" y="1150" class="bodytiny">Uses travel-time gap rather than pure kilometer distance.</text>
+  <text x="976" y="1174" class="bodytiny">Large asymmetry is penalized exponentially.</text>
+
+  <text x="976" y="1222" class="body"><tspan class="bold">Spatiotemporal component</tspan></text>
+  <text x="976" y="1250" class="bodytiny">Availability overlap</text>
+  <text x="976" y="1272" class="bodytiny">Radius tolerance score</text>
+  <text x="976" y="1294" class="bodytiny">Venue popularity balance</text>
+  <text x="976" y="1316" class="bodytiny">Mutual place vote</text>
+  <text x="976" y="1338" class="bodytiny">Time-slot vote agreement</text>
+
+  <text x="976" y="1386" class="body"><tspan class="bold">Web-signal component</tspan></text>
+  <text x="976" y="1414" class="bodytiny">Status: open / uncertain / closed</text>
+  <text x="976" y="1436" class="bodytiny">Queue level and estimated wait time</text>
+  <text x="976" y="1458" class="bodytiny">Crowd index, promo bonus, risk penalty</text>
+
+  <rect x="976" y="1486" width="326" height="22" fill="#2f5f8d" opacity="0.12" rx="10"/>
+  <rect x="976" y="1486" width="245" height="22" fill="#2f5f8d" opacity="0.72" rx="10"/>
+  <text x="1234" y="1502" class="bodytiny">fairness-heavy weighting</text>
+
+  <rect x="952" y="1554" width="374" height="42" class="sectionbar"/>
+  <text x="972" y="1583" class="sectiontext">Architecture Sketch</text>
+
+  <rect x="952" y="1614" width="374" height="372" class="card"/>
+  <rect x="985" y="1650" width="110" height="52" class="soft"/>
+  <text x="1007" y="1682" class="bodytiny">User A</text>
+  <rect x="1185" y="1650" width="110" height="52" class="soft"/>
+  <text x="1207" y="1682" class="bodytiny">User B</text>
+  <path d="M1095 1676 L1185 1676" class="line" marker-end="url(#arrow)"/>
+
+  <rect x="1055" y="1748" width="170" height="60" class="deep" rx="10"/>
+  <text x="1088" y="1783" style="font:700 16px Arial, sans-serif; fill:#fff;">Fair Reachable Zone</text>
+  <path d="M1040 1702 L1090 1748" class="line" marker-end="url(#arrow)"/>
+  <path d="M1240 1702 L1190 1748" class="line" marker-end="url(#arrow)"/>
+
+  <rect x="987" y="1862" width="120" height="60" class="soft"/>
+  <text x="1012" y="1896" class="bodytiny">Venue Search</text>
+  <rect x="1173" y="1862" width="120" height="60" class="soft"/>
+  <text x="1193" y="1896" class="bodytiny">Live Signals</text>
+  <path d="M1110 1808 L1050 1862" class="line" marker-end="url(#arrow)"/>
+  <path d="M1170 1808 L1230 1862" class="line" marker-end="url(#arrow)"/>
+
+  <rect x="1055" y="1950" width="170" height="60" class="deep" rx="10"/>
+  <text x="1096" y="1985" style="font:700 16px Arial, sans-serif; fill:#fff;">Explainable Ranking</text>
+  <path d="M1047 1922 L1100 1950" class="line" marker-end="url(#arrow)"/>
+  <path d="M1233 1922 L1180 1950" class="line" marker-end="url(#arrow)"/>
+
+  <!-- Column 4 -->
+  <rect x="1402" y="292" width="350" height="42" class="sectionbar"/>
+  <text x="1422" y="321" class="sectiontext">Interface Mockup</text>
+
+  <rect x="1402" y="354" width="350" height="700" class="card"/>
+  <rect x="1430" y="384" width="294" height="32" fill="#173d61" rx="8"/>
+  <circle cx="1454" cy="400" r="5" fill="#f06d6d"/>
+  <circle cx="1472" cy="400" r="5" fill="#f3c05d"/>
+  <circle cx="1490" cy="400" r="5" fill="#6dcf8f"/>
+  <text x="1510" y="405" style="font:700 14px Arial, sans-serif; fill:#fff;">MeetHalfway AI - Streamlit App</text>
+
+  <rect x="1430" y="432" width="294" height="92" fill="#f7fbff" stroke="#c9d9e6" rx="12"/>
+  <text x="1450" y="462" class="body"><tspan class="bold">Enter Two Locations</tspan></text>
+  <rect x="1450" y="476" width="120" height="26" class="chip"/>
+  <rect x="1586" y="476" width="118" height="26" class="chip"/>
+  <text x="1462" y="494" class="bodytiny">Address / GPS</text>
+  <text x="1596" y="494" class="bodytiny">Address / GPS</text>
+
+  <rect x="1430" y="546" width="294" height="82" fill="#f7fbff" stroke="#c9d9e6" rx="12"/>
+  <text x="1450" y="575" class="body"><tspan class="bold">Preference Inputs</tspan></text>
+  <text x="1450" y="600" class="bodytiny">Venue type • budget • travel mode • time slots</text>
+
+  <rect x="1430" y="652" width="294" height="180" fill="#eef6fc" stroke="#bdd2e4" rx="12"/>
+  <rect x="1450" y="676" width="254" height="124" fill="#dbe9f5" stroke="#b6ccdf" rx="10"/>
+  <circle cx="1514" cy="734" r="24" fill="#7ba4cf" opacity="0.55"/>
+  <circle cx="1640" cy="734" r="24" fill="#7ba4cf" opacity="0.55"/>
+  <ellipse cx="1576" cy="738" rx="70" ry="40" fill="#6aa4d8" opacity="0.30"/>
+  <circle cx="1542" cy="736" r="6" fill="#ea6e7a"/>
+  <circle cx="1610" cy="724" r="6" fill="#5a8ad8"/>
+  <circle cx="1578" cy="750" r="6" fill="#3ba66b"/>
+  <text x="1450" y="820" class="bodytiny">Interactive map preview with overlap area and venue pins</text>
+
+  <rect x="1430" y="858" width="294" height="164" fill="#f7fbff" stroke="#c9d9e6" rx="12"/>
+  <text x="1450" y="888" class="body"><tspan class="bold">Top Picks</tspan></text>
+  <rect x="1450" y="904" width="254" height="28" class="bluebox"/>
+  <text x="1462" y="923" class="bodytiny">1. Blue Bottle Cafe  | fairness 0.92 | open</text>
+  <rect x="1450" y="940" width="254" height="28" class="bluebox"/>
+  <text x="1462" y="959" class="bodytiny">2. Mildreds         | fairness 0.88 | low queue</text>
+  <rect x="1450" y="976" width="254" height="28" class="bluebox"/>
+  <text x="1462" y="995" class="bodytiny">3. Park Nearby      | fairness 0.84 | surprise</text>
+
+  <rect x="1402" y="1080" width="350" height="42" class="sectionbar"/>
+  <text x="1422" y="1109" class="sectiontext">Result Interpretation</text>
+
+  <rect x="1402" y="1140" width="350" height="430" class="card"/>
+  <rect x="1432" y="1174" width="290" height="64" class="deep" rx="10"/>
+  <text x="1452" y="1204" style="font:700 18px Arial, sans-serif; fill:#fff;">Why this place ranks high</text>
+  <text x="1452" y="1226" style="font:400 14px Arial, sans-serif; fill:#deebf7;">small travel-time gap + inside overlap + manageable crowd</text>
+
+  <text x="1432" y="1272" class="bodytiny">• Recommendation is not just “closest to center”.</text>
+  <text x="1432" y="1298" class="bodytiny">• It also reflects whether both users can realistically get there.</text>
+  <text x="1432" y="1324" class="bodytiny">• Risky venues are downgraded even if they look central.</text>
+  <text x="1432" y="1350" class="bodytiny">• The UI can show rankings, votes, confidence, and map markers.</text>
+
+  <rect x="1432" y="1392" width="290" height="24" fill="#2f5f8d" opacity="0.16" rx="8"/>
+  <rect x="1432" y="1392" width="240" height="24" fill="#2f5f8d" opacity="0.78" rx="8"/>
+  <text x="1438" y="1409" class="bodytiny">travel-time fairness</text>
+
+  <rect x="1432" y="1430" width="290" height="24" fill="#2f5f8d" opacity="0.16" rx="8"/>
+  <rect x="1432" y="1430" width="218" height="24" fill="#2f5f8d" opacity="0.72" rx="8"/>
+  <text x="1438" y="1447" class="bodytiny">venue open / crowd quality</text>
+
+  <rect x="1432" y="1468" width="290" height="24" fill="#2f5f8d" opacity="0.16" rx="8"/>
+  <rect x="1432" y="1468" width="186" height="24" fill="#2f5f8d" opacity="0.66" rx="8"/>
+  <text x="1438" y="1485" class="bodytiny">mutual preference fit</text>
+
+  <rect x="1402" y="1596" width="350" height="42" class="sectionbar"/>
+  <text x="1422" y="1625" class="sectiontext">Key Repository Insights</text>
+
+  <rect x="1402" y="1656" width="350" height="330" class="card"/>
+  <text x="1422" y="1692" class="bodytiny">• `app_streamlit.py` is a lighter presentation-oriented interface.</text>
+  <text x="1422" y="1718" class="bodytiny">• `app_streamlit_new.py` adds room logic, local storage, vote flow, and</text>
+  <text x="1422" y="1740" class="bodytiny">  richer multi-step orchestration.</text>
+  <text x="1422" y="1770" class="bodytiny">• `meethalfway.py` is the real engine: geocoding, fairness zone, place</text>
+  <text x="1422" y="1792" class="bodytiny">  retrieval, enrichment, scoring, explanations, and map generation.</text>
+  <text x="1422" y="1822" class="bodytiny">• The architecture is essentially a competition-ready Python monolith</text>
+  <text x="1422" y="1844" class="bodytiny">  with strong fallback behavior and clear demoability.</text>
+
+  <rect x="1432" y="1882" width="290" height="76" fill="#173d61" rx="10"/>
+  <text x="1450" y="1914" style="font:700 18px Arial, sans-serif; fill:#fff;">Takeaway</text>
+  <text x="1450" y="1940" style="font:400 14px Arial, sans-serif; fill:#deebf7;">This is a practical decision-support system,</text>
+  <text x="1450" y="1960" style="font:400 14px Arial, sans-serif; fill:#deebf7;">not just a midpoint calculator.</text>
+
+  <!-- Bottom strip -->
+  <rect x="34" y="2525" width="1732" height="108" fill="#12385c" rx="12"/>
+  <text x="64" y="2572" style="font:700 24px Arial, sans-serif; fill:#fff;">Conclusion</text>
+  <text x="64" y="2606" style="font:400 18px Arial, sans-serif; fill:#deebf7;">MeetHalfway AI reframes “where should we meet?” as a fairness-aware, real-time, and explainable optimization problem. The project combines geo reachability, fallback-first engineering, live web signals, and interpretable scoring into a demo-ready product experience.</text>
+  <text x="64" y="2632" style="font:400 15px Arial, sans-serif; fill:#b9d0e5;">Poster style adapted from the reference competition slide: dark blue academic header, white research-poster layout, modular column sections, and figure-first storytelling.</text>
+</svg>

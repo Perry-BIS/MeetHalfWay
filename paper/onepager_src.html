@@ -1,0 +1,34 @@
+<!doctype html><html><head><meta charset='utf-8'><style>
+@page { size: A4; margin: 9mm 11mm; }
+* { box-sizing: border-box; }
+body { font-family: "Microsoft YaHei","Segoe UI","Calibri",sans-serif;
+       font-size: 8.9pt; line-height: 1.32; color: #1a1a1a; max-width: 100%; }
+h1 { font-size: 13.5pt; margin: 0 0 4px; border-bottom: 2px solid #0A7B83; padding-bottom: 3px; color:#0A7B83; }
+h2 { font-size: 10.3pt; margin: 8px 0 3px; color:#0A7B83; }
+blockquote { background:#f4f8f8; border-left:3px solid #0A7B83; margin:5px 0;
+             padding:5px 9px; font-size:8.2pt; color:#333; }
+blockquote p { margin:2px 0; }
+table { border-collapse: collapse; width:100%; margin:5px 0; font-size:8pt; }
+th,td { border:1px solid #ccc; padding:2.5px 6px; text-align:left; vertical-align:top; }
+th { background:#0A7B83; color:#fff; }
+tr:nth-child(even) td { background:#f6f9f9; }
+code { background:#eef2f2; padding:1px 3px; border-radius:3px; font-size:7.7pt;
+       font-family:"Consolas",monospace; }
+ul,ol { margin:3px 0 3px 0; padding-left:18px; }
+li { margin:1px 0; }
+hr { border:none; border-top:1px solid #ddd; margin:6px 0; }
+p { margin:3px 0; }
+strong { color:#0A2540; }
+</style></head><body><h1>MeetHalfway AI — ACM SIGSPATIAL 2026 Student Research Competition</h1>
+<h2>The Project</h2>
+<p>MeetHalfway AI studies a common but under-examined spatial decision: <strong>where two people should meet so that travel effort is fair to both</strong>. Most tools answer with a geometric midpoint, which can place one person across a river, behind a highway, or far longer in travel time than the other. This project reframes the question as one of <em>spatial fairness</em>.</p>
+<p>The system computes a shared feasible region as the intersection of two travel-time isochrones (OpenRouteService / Mapbox, intersected with Shapely), subtracts natural barriers such as rivers and highways, and measures the <strong>travel-time fairness gap</strong> between the two participants for every candidate venue. Candidates are retrieved from real map data (Mapbox / OpenStreetMap) and ranked by an explainable score that rewards balanced travel time and venue quality while penalizing closures, crowding, and queue risk. The result is a transparent, fairness-aware recommendation rather than an opaque "best guess."</p>
+<h2>Why It Fits the Student Research Competition</h2>
+<ul>
+<li><strong>It poses a clear research question:</strong> can isochrone-intersection fairness produce meeting points that are measurably more equitable in travel effort than geometric-midpoint baselines, without sacrificing venue quality?</li>
+<li><strong>It is student-led and self-contained.</strong> The spatial engine, the fairness formulation, and the interface are my own implementation, making it well suited to the individual-contribution focus of the competition.</li>
+<li><strong>It sits squarely in SIGSPATIAL's research space:</strong> isochrones, reachability, spatial fairness, and location-based recommendation are core topics of the conference and of urban computing more broadly.</li>
+<li><strong>It suits the poster-and-talk format</strong>, where a focused problem, a clear method, and visual results (isochrone-overlap maps and fairness comparisons) communicate effectively.</li>
+</ul>
+<h2>Why Submit</h2>
+<p>Fairness in everyday spatial decisions is an important and approachable research direction, and meeting-place selection is a clean setting to study it. Presenting this work at the SIGSPATIAL Student Research Competition places the project in front of researchers who work directly on reachability, accessibility, and spatial recommendation, and offers the chance to receive expert feedback on both the fairness formulation and the broader question of how to make spatial recommendations more equitable and explainable.</p></body></html>

@@ -1,0 +1,205 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="1100" viewBox="0 0 900 1100">
+  <defs>
+    <!-- Background gradient -->
+    <linearGradient id="bgGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#0f2342"/>
+      <stop offset="100%" stop-color="#1a3a5c"/>
+    </linearGradient>
+    <!-- Header gradient -->
+    <linearGradient id="headerGrad" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#1565c0"/>
+      <stop offset="100%" stop-color="#0d47a1"/>
+    </linearGradient>
+    <!-- Card gradient (light) -->
+    <linearGradient id="cardGrad1" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#ffffff"/>
+      <stop offset="100%" stop-color="#e8f2ff"/>
+    </linearGradient>
+    <linearGradient id="cardGrad2" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#ffffff"/>
+      <stop offset="100%" stop-color="#e3f2fd"/>
+    </linearGradient>
+    <linearGradient id="cardGrad3" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#ffffff"/>
+      <stop offset="100%" stop-color="#e8eaf6"/>
+    </linearGradient>
+    <linearGradient id="cardGrad4" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#ffffff"/>
+      <stop offset="100%" stop-color="#e0f2f1"/>
+    </linearGradient>
+    <!-- Icon circle gradients -->
+    <linearGradient id="icon1" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#42a5f5"/>
+      <stop offset="100%" stop-color="#1565c0"/>
+    </linearGradient>
+    <linearGradient id="icon2" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#26c6da"/>
+      <stop offset="100%" stop-color="#00838f"/>
+    </linearGradient>
+    <linearGradient id="icon3" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#7e57c2"/>
+      <stop offset="100%" stop-color="#4527a0"/>
+    </linearGradient>
+    <linearGradient id="icon4" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#26a69a"/>
+      <stop offset="100%" stop-color="#00695c"/>
+    </linearGradient>
+    <!-- Connector line gradient -->
+    <linearGradient id="connGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#42a5f5" stop-opacity="0.8"/>
+      <stop offset="100%" stop-color="#26a69a" stop-opacity="0.8"/>
+    </linearGradient>
+    <!-- Shadow filter -->
+    <filter id="shadow" x="-15%" y="-15%" width="130%" height="140%">
+      <feDropShadow dx="0" dy="8" stdDeviation="14" flood-color="#000000" flood-opacity="0.25"/>
+    </filter>
+    <filter id="shadowSoft" x="-10%" y="-10%" width="120%" height="130%">
+      <feDropShadow dx="0" dy="4" stdDeviation="8" flood-color="#000000" flood-opacity="0.18"/>
+    </filter>
+    <filter id="glowBlue" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="0" stdDeviation="6" flood-color="#42a5f5" flood-opacity="0.5"/>
+    </filter>
+    <!-- Arrow marker -->
+    <marker id="arrowDown" viewBox="0 0 14 14" refX="7" refY="12" markerWidth="10" markerHeight="10" orient="auto">
+      <path d="M2 2 L7 12 L12 2" fill="none" stroke="url(#connGrad)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+    </marker>
+    <!-- Decorative dots pattern -->
+    <pattern id="dots" x="0" y="0" width="30" height="30" patternUnits="userSpaceOnUse">
+      <circle cx="2" cy="2" r="1.2" fill="#ffffff" fill-opacity="0.04"/>
+    </pattern>
+  </defs>
+
+  <!-- Background -->
+  <rect width="900" height="1100" fill="url(#bgGrad)"/>
+  <rect width="900" height="1100" fill="url(#dots)"/>
+
+  <!-- Subtle decorative arcs top-right -->
+  <circle cx="860" cy="60" r="140" fill="none" stroke="#1e88e5" stroke-width="1" stroke-opacity="0.15"/>
+  <circle cx="860" cy="60" r="200" fill="none" stroke="#1e88e5" stroke-width="0.8" stroke-opacity="0.09"/>
+  <!-- Subtle decorative arcs bottom-left -->
+  <circle cx="40" cy="1060" r="140" fill="none" stroke="#26a69a" stroke-width="1" stroke-opacity="0.12"/>
+  <circle cx="40" cy="1060" r="200" fill="none" stroke="#26a69a" stroke-width="0.8" stroke-opacity="0.07"/>
+
+  <!-- ── HEADER ── -->
+  <rect x="50" y="48" width="800" height="120" rx="20" fill="url(#headerGrad)" filter="url(#shadow)"/>
+  <!-- Header accent line -->
+  <rect x="50" y="48" width="8" height="120" rx="4" fill="#64b5f6"/>
+  <!-- Logo mark -->
+  <circle cx="103" cy="108" r="28" fill="#ffffff" fill-opacity="0.12"/>
+  <text x="103" y="116" text-anchor="middle" style="font:700 22px 'Segoe UI',Arial,sans-serif; fill:#ffffff;">M</text>
+  <!-- Title text -->
+  <text x="148" y="96" style="font:700 13px 'Segoe UI',Arial,sans-serif; fill:#90caf9; letter-spacing:2px; text-transform:uppercase;">MeetHalfway AI</text>
+  <text x="148" y="131" style="font:700 34px 'Segoe UI',Arial,sans-serif; fill:#ffffff;">Product Flow</text>
+  <!-- Step count badge -->
+  <rect x="710" y="76" width="116" height="64" rx="12" fill="#ffffff" fill-opacity="0.12"/>
+  <text x="768" y="104" text-anchor="middle" style="font:700 26px 'Segoe UI',Arial,sans-serif; fill:#ffffff;">4</text>
+  <text x="768" y="127" text-anchor="middle" style="font:400 13px 'Segoe UI',Arial,sans-serif; fill:#90caf9;">Steps</text>
+
+  <!-- ── CONNECTOR LINE (vertical dashed) ── -->
+  <line x1="450" y1="240" x2="450" y2="980"
+        stroke="url(#connGrad)" stroke-width="3"
+        stroke-dasharray="6 10" stroke-linecap="round"/>
+
+  <!-- ════════════════════════════════════════
+       STEP 1
+  ════════════════════════════════════════ -->
+  <!-- Card -->
+  <rect x="80" y="218" width="680" height="130" rx="22" fill="url(#cardGrad1)" filter="url(#shadow)"/>
+  <!-- Left accent bar -->
+  <rect x="80" y="218" width="7" height="130" rx="4" fill="url(#icon1)"/>
+  <!-- Step number badge -->
+  <rect x="106" y="238" width="56" height="28" rx="14" fill="url(#icon1)"/>
+  <text x="134" y="258" text-anchor="middle" style="font:700 14px 'Segoe UI',Arial,sans-serif; fill:#fff; letter-spacing:0.5px;">Step 1</text>
+  <!-- Main text -->
+  <text x="180" y="271" style="font:700 22px 'Segoe UI',Arial,sans-serif; fill:#0d2a4a;">Collect Locations &amp; Preferences</text>
+  <text x="180" y="302" style="font:400 15px 'Segoe UI',Arial,sans-serif; fill:#3d6080;">Both users provide their address or GPS coordinates, travel mode,</text>
+  <text x="180" y="324" style="font:400 15px 'Segoe UI',Arial,sans-serif; fill:#3d6080;">party size, time slot, venue category, and budget.</text>
+  <!-- Icon circle -->
+  <circle cx="718" cy="283" r="36" fill="url(#icon1)" filter="url(#glowBlue)"/>
+  <!-- Location pin icon (SVG path) -->
+  <path d="M718 262 a14 14 0 0 1 14 14 c0 11 -14 26 -14 26 s-14-15-14-26 a14 14 0 0 1 14-14 z"
+        fill="#ffffff" fill-opacity="0.95"/>
+  <circle cx="718" cy="276" r="5" fill="url(#icon1)"/>
+
+  <!-- ── Connector node ── -->
+  <circle cx="450" cy="348" r="10" fill="url(#icon1)" filter="url(#shadowSoft)"/>
+  <circle cx="450" cy="348" r="5" fill="#ffffff"/>
+
+  <!-- ════════════════════════════════════════
+       STEP 2
+  ════════════════════════════════════════ -->
+  <rect x="80" y="398" width="680" height="130" rx="22" fill="url(#cardGrad2)" filter="url(#shadow)"/>
+  <rect x="80" y="398" width="7" height="130" rx="4" fill="url(#icon2)"/>
+  <rect x="106" y="418" width="56" height="28" rx="14" fill="url(#icon2)"/>
+  <text x="134" y="438" text-anchor="middle" style="font:700 14px 'Segoe UI',Arial,sans-serif; fill:#fff; letter-spacing:0.5px;">Step 2</text>
+  <text x="180" y="451" style="font:700 22px 'Segoe UI',Arial,sans-serif; fill:#0d2a4a;">Build Isochrones &amp; Overlap Area</text>
+  <text x="180" y="482" style="font:400 15px 'Segoe UI',Arial,sans-serif; fill:#3d6080;">Travel-time polygons are computed for each user (via OpenRouteService,</text>
+  <text x="180" y="504" style="font:400 15px 'Segoe UI',Arial,sans-serif; fill:#3d6080;">Mapbox, or circle approximation). Their intersection defines the fair zone.</text>
+  <!-- Icon circle -->
+  <circle cx="718" cy="463" r="36" fill="url(#icon2)" filter="url(#shadowSoft)"/>
+  <!-- Overlap rings icon -->
+  <circle cx="707" cy="460" r="14" fill="none" stroke="#ffffff" stroke-width="2.5" stroke-opacity="0.9"/>
+  <circle cx="729" cy="460" r="14" fill="none" stroke="#ffffff" stroke-width="2.5" stroke-opacity="0.9"/>
+  <ellipse cx="718" cy="460" rx="7" ry="11" fill="#ffffff" fill-opacity="0.30"/>
+
+  <circle cx="450" cy="528" r="10" fill="url(#icon2)" filter="url(#shadowSoft)"/>
+  <circle cx="450" cy="528" r="5" fill="#ffffff"/>
+
+  <!-- ════════════════════════════════════════
+       STEP 3
+  ════════════════════════════════════════ -->
+  <rect x="80" y="578" width="680" height="130" rx="22" fill="url(#cardGrad3)" filter="url(#shadow)"/>
+  <rect x="80" y="578" width="7" height="130" rx="4" fill="url(#icon3)"/>
+  <rect x="106" y="598" width="56" height="28" rx="14" fill="url(#icon3)"/>
+  <text x="134" y="618" text-anchor="middle" style="font:700 14px 'Segoe UI',Arial,sans-serif; fill:#fff; letter-spacing:0.5px;">Step 3</text>
+  <text x="180" y="631" style="font:700 22px 'Segoe UI',Arial,sans-serif; fill:#0d2a4a;">Search Venue Candidates</text>
+  <text x="180" y="662" style="font:400 15px 'Segoe UI',Arial,sans-serif; fill:#3d6080;">Venues near the fair centroid are fetched via Mapbox POI → Overpass QL</text>
+  <text x="180" y="684" style="font:400 15px 'Segoe UI',Arial,sans-serif; fill:#3d6080;">→ OSM Nominatim fallback chain, filtered by category and radius.</text>
+  <!-- Icon circle -->
+  <circle cx="718" cy="643" r="36" fill="url(#icon3)" filter="url(#shadowSoft)"/>
+  <!-- Search icon -->
+  <circle cx="714" cy="639" r="12" fill="none" stroke="#ffffff" stroke-width="2.8"/>
+  <line x1="723" y1="648" x2="733" y2="658" stroke="#ffffff" stroke-width="2.8" stroke-linecap="round"/>
+
+  <circle cx="450" cy="708" r="10" fill="url(#icon3)" filter="url(#shadowSoft)"/>
+  <circle cx="450" cy="708" r="5" fill="#ffffff"/>
+
+  <!-- ════════════════════════════════════════
+       STEP 4
+  ════════════════════════════════════════ -->
+  <rect x="80" y="758" width="680" height="130" rx="22" fill="url(#cardGrad4)" filter="url(#shadow)"/>
+  <rect x="80" y="758" width="7" height="130" rx="4" fill="url(#icon4)"/>
+  <rect x="106" y="778" width="56" height="28" rx="14" fill="url(#icon4)"/>
+  <text x="134" y="798" text-anchor="middle" style="font:700 14px 'Segoe UI',Arial,sans-serif; fill:#fff; letter-spacing:0.5px;">Step 4</text>
+  <text x="180" y="811" style="font:700 22px 'Segoe UI',Arial,sans-serif; fill:#0d2a4a;">Enrich with Live Signals &amp; Semantics</text>
+  <text x="180" y="842" style="font:400 15px 'Segoe UI',Arial,sans-serif; fill:#3d6080;">Tavily / DuckDuckGo web search + Yelp ratings enrich each candidate.</text>
+  <text x="180" y="864" style="font:400 15px 'Segoe UI',Arial,sans-serif; fill:#3d6080;">Crowd, wait, safety, and open/close signals feed the explainable ranker.</text>
+  <!-- Icon circle -->
+  <circle cx="718" cy="823" r="36" fill="url(#icon4)" filter="url(#shadowSoft)"/>
+  <!-- Sparkle / signal icon -->
+  <line x1="718" y1="806" x2="718" y2="840" stroke="#ffffff" stroke-width="2.5" stroke-linecap="round"/>
+  <line x1="701" y1="823" x2="735" y2="823" stroke="#ffffff" stroke-width="2.5" stroke-linecap="round"/>
+  <line x1="706" y1="811" x2="730" y2="835" stroke="#ffffff" stroke-width="2" stroke-linecap="round" stroke-opacity="0.65"/>
+  <line x1="730" y1="811" x2="706" y2="835" stroke="#ffffff" stroke-width="2" stroke-linecap="round" stroke-opacity="0.65"/>
+
+  <!-- ── BOTTOM SUMMARY BAR ── -->
+  <rect x="80" y="936" width="740" height="84" rx="18" fill="#1565c0" fill-opacity="0.22" stroke="#42a5f5" stroke-width="1.2" stroke-opacity="0.4"/>
+  <!-- Dividers -->
+  <line x1="327" y1="952" x2="327" y2="1004" stroke="#42a5f5" stroke-width="1" stroke-opacity="0.3"/>
+  <line x1="574" y1="952" x2="574" y2="1004" stroke="#42a5f5" stroke-width="1" stroke-opacity="0.3"/>
+  <!-- Stat 1 -->
+  <text x="204" y="979" text-anchor="middle" style="font:700 22px 'Segoe UI',Arial,sans-serif; fill:#64b5f6;">Travel-Time</text>
+  <text x="204" y="1000" text-anchor="middle" style="font:400 13px 'Segoe UI',Arial,sans-serif; fill:#90caf9;">Fairness Engine</text>
+  <!-- Stat 2 -->
+  <text x="450" y="979" text-anchor="middle" style="font:700 22px 'Segoe UI',Arial,sans-serif; fill:#80cbc4;">Fallback Chain</text>
+  <text x="450" y="1000" text-anchor="middle" style="font:400 13px 'Segoe UI',Arial,sans-serif; fill:#b2dfdb;">3-tier resilience</text>
+  <!-- Stat 3 -->
+  <text x="697" y="979" text-anchor="middle" style="font:700 22px 'Segoe UI',Arial,sans-serif; fill:#ce93d8;">Explainable</text>
+  <text x="697" y="1000" text-anchor="middle" style="font:400 13px 'Segoe UI',Arial,sans-serif; fill:#e1bee7;">Score breakdown</text>
+
+  <!-- ── FOOTER ── -->
+  <text x="450" y="1070" text-anchor="middle"
+        style="font:400 13px 'Segoe UI',Arial,sans-serif; fill:#546e8a; letter-spacing:1.2px;">
+    MEETHALFWAY AI  ·  Fair · Real-Time · Explainable
+  </text>
+</svg>

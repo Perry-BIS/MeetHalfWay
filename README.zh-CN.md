@@ -77,13 +77,13 @@ pip install -r requirements.txt
 ### 3）启动应用
 
 ```powershell
-streamlit run app_streamlit.py
+streamlit run app_streamlit_new.py
 ```
 
 ## 仓库结构（比赛提交主干）
 
-- `app_streamlit.py`：主可视化入口
-- `app_streamlit_new.py`：新版实验入口
+- `app_streamlit_new.py`：主可视化入口
+- `app_streamlit.py`：仅用于兼容跳转到新版的薄入口
 - `meethalfway.py`：核心算法与评分逻辑
 - `requirements.txt`：依赖清单
 - `.env.example`：环境变量模板
@@ -99,5 +99,5 @@ streamlit run app_streamlit.py
 推荐部署到 Streamlit Community Cloud：
 
 1. 连接仓库。
-2. 入口文件选择 `app_streamlit.py`。
+2. 入口文件选择 `app_streamlit_new.py`。
 3. 在平台 Secrets 中配置环境变量。

@@ -1,9 +1,13 @@
 import asyncio
+import html
 import json
 import math
 import os
 import re
-import tomllib
+try:
+    import tomllib
+except ModuleNotFoundError:
+    import tomli as tomllib
 from pathlib import Path
 from datetime import datetime
 from typing import Any, Dict, Optional, Tuple
@@ -57,6 +61,8 @@ def init_session_state():
         st.session_state.user_role = ""
     if "user_name" not in st.session_state:
         st.session_state.user_name = ""
+    if "participant_count" not in st.session_state:
+        st.session_state.participant_count = 2
     if "link_generated" not in st.session_state:
         st.session_state.link_generated = False
     if "generated_room_id" not in st.session_state:
@@ -77,14 +83,18 @@ def init_session_state():
         st.session_state.direct_votes = {"A": [], "B": []}
     if "direct_recommendation_meta" not in st.session_state:
         st.session_state.direct_recommendation_meta = {}
+    if "direct_recommendation_text" not in st.session_state:
+        st.session_state.direct_recommendation_text = ""
 
 
 init_session_state()
 
 
+
 # ============================================================================
 # Shared Room Storage
 # ============================================================================
+MAX_PARTICIPANTS = 5  # 支持最多5人
 ROOM_STATE_PATH = Path(__file__).with_name("room_state.json")
 STREAMLIT_CONFIG_PATH = Path(__file__).with_name(".streamlit").joinpath("config.toml")
 
@@ -94,12 +104,90 @@ def _utc_timestamp() -> str:
 
 
 def _normalize_user_role(user_role: str) -> str:
+    # 支持P1~P5编号，兼容旧A/B
     role = str(user_role or "").strip().upper()
+    if role in {"A", "B"}:
+        return role
+    if role.startswith("P") and role[1:].isdigit():
+        idx = int(role[1:])
+        if 1 <= idx <= 5:
+            return f"P{idx}"
+    # 兼容数字
+    if role.isdigit() and 1 <= int(role) <= 5:
+        return f"P{int(role)}"
+    # 默认A/B映射
     if role.endswith("A"):
-        return "A"
+        return "P1"
     if role.endswith("B"):
-        return "B"
+        return "P2"
     return role
+
+
+def _role_index(role_key: str) -> Optional[int]:
+    role = _normalize_user_role(role_key)
+    if role in {"A", "B"}:
+        return 1 if role == "A" else 2
+    if role.startswith("P") and role[1:].isdigit():
+        idx = int(role[1:])
+        if 1 <= idx <= MAX_PARTICIPANTS:
+            return idx
+    return None
+
+
+def _role_label(role_key: str) -> str:
+    idx = _role_index(role_key)
+    return f"Person {idx}" if idx else f"Person {role_key}"
+
+
+def _role_options(total: int) -> list[str]:
+    total = max(2, min(MAX_PARTICIPANTS, int(total or 2)))
+    return [f"Person {i}" for i in range(1, total + 1)]
+
+
+def _canonical_participant_key(raw_key: str) -> Optional[str]:
+    idx = _role_index(raw_key)
+    return f"P{idx}" if idx else None
+
+
+def _set_room_participant_count(room_id: str, count: int) -> None:
+    room_key = str(room_id or "").strip()
+    if not room_key:
+        return
+    count = max(2, min(MAX_PARTICIPANTS, int(count or 2)))
+    state = _load_room_state()
+    room_record = state.setdefault(room_key, {"participants": {}, "updated_at": _utc_timestamp()})
+    if int(room_record.get("participant_count") or 2) != count:
+        room_record["participant_count"] = count
+        room_record["updated_at"] = _utc_timestamp()
+        _invalidate_room_outputs(room_record, "participant count changed")
+    else:
+        room_record["participant_count"] = count
+        room_record["updated_at"] = _utc_timestamp()
+    _save_room_state(state)
+
+
+def _room_participant_count(room_record: Dict[str, Any]) -> int:
+    raw_count = room_record.get("participant_count")
+    if raw_count:
+        try:
+            return max(2, min(MAX_PARTICIPANTS, int(raw_count)))
+        except Exception:
+            pass
+    participants = room_record.get("participants", {}) or {}
+    discovered = [
+        idx for idx in (_role_index(key) for key in participants.keys())
+        if idx is not None
+    ]
+    return max(2, min(MAX_PARTICIPANTS, max(discovered, default=2)))
+
+
+def _canonical_room_participants(room_record: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
+    canonical: Dict[str, Dict[str, Any]] = {}
+    for raw_key, value in (room_record.get("participants", {}) or {}).items():
+        key = _canonical_participant_key(raw_key)
+        if key and isinstance(value, dict):
+            canonical[key] = value
+    return canonical
 
 
 def _load_room_state() -> Dict[str, Any]:
@@ -172,8 +260,12 @@ def _participant_record(room_id: str, user_role: str) -> Dict[str, Any]:
     return room_record.get("participants", {}).get(participant_key, {})
 
 
-def _partner_role(user_role: str) -> str:
-    return "B" if _normalize_user_role(user_role) == "A" else "A"
+def _partner_roles(user_role: str, total: int = None) -> list:
+    # 返回除自己外的所有角色key
+    me = _normalize_user_role(user_role)
+    n = total if total is not None else MAX_PARTICIPANTS
+    keys = [f"P{i}" for i in range(1, n+1)]
+    return [k for k in keys if k != me]
 
 
 def _persist_user_location(room_id: str, user_role: str, location: Location, source: str) -> None:
@@ -327,40 +419,64 @@ def _render_radius_selector_block(
 
 
 def _preference_summary(room_id: str) -> Dict[str, Any]:
+    """
+    汇总所有参与者的location和preferences，支持2-5人。
+    返回：
+      - participants: {P1: {...}, P2: {...}, ...}
+      - all_prefs: [dict, ...]
+      - all_locs: [dict, ...]
+      - all_ready: bool
+      - weighted_center: {lat, lon} or None
+      - weights: [float, ...]
+    """
     room_record = _get_room_record(room_id)
-    participants = room_record.get("participants", {})
-    prefs_a = participants.get("A", {}).get("preferences") or {}
-    prefs_b = participants.get("B", {}).get("preferences") or {}
-    loc_a = participants.get("A", {}).get("location") or {}
-    loc_b = participants.get("B", {}).get("location") or {}
-    both_preferences_ready = bool(prefs_a and prefs_b)
-    both_locations_ready = bool(loc_a and loc_b)
+    participants = _canonical_room_participants(room_record)
+    participant_count = _room_participant_count(room_record)
+    keys = [f"P{i}" for i in range(1, participant_count + 1)]
+    all_prefs = [participants.get(k, {}).get("preferences") or {} for k in keys]
+    all_locs = [participants.get(k, {}).get("location") or {} for k in keys]
+    both_preferences_ready = all(bool(p) for p in all_prefs) and len(all_prefs) >= 2
+    both_locations_ready = all(bool(loc) for loc in all_locs) and len(all_locs) >= 2
 
     weighted_center = None
-    weight_a = weight_b = None
+    weights = None
     if both_preferences_ready and both_locations_ready:
-        weight_a, weight_b = compute_commute_bias_weights(
-            prefs_a.get("travel_mode"),
-            prefs_b.get("travel_mode"),
-            prefs_a.get("distance_miles"),
-            prefs_b.get("distance_miles"),
-        )
-        total = weight_a + weight_b
+        weights = []
+        for pref in all_prefs:
+            try:
+                weight, _ = compute_commute_bias_weights(
+                    pref.get("travel_mode"),
+                    pref.get("travel_mode"),
+                    pref.get("distance_miles"),
+                    pref.get("distance_miles"),
+                )
+            except Exception:
+                weight = 1.0
+            weights.append(float(weight))
+        total = sum(weights)
         weighted_center = {
-            "lat": (float(loc_a["lat"]) * weight_a + float(loc_b["lat"]) * weight_b) / total,
-            "lon": (float(loc_a["lon"]) * weight_a + float(loc_b["lon"]) * weight_b) / total,
+            "lat": sum(float(loc["lat"]) * w for loc, w in zip(all_locs, weights)) / total,
+            "lon": sum(float(loc["lon"]) * w for loc, w in zip(all_locs, weights)) / total,
         }
 
     return {
-        "prefs_a": prefs_a,
-        "prefs_b": prefs_b,
-        "loc_a": loc_a,
-        "loc_b": loc_b,
+        "participants": participants,
+        "participant_count": participant_count,
+        "all_prefs": all_prefs,
+        "all_locs": all_locs,
         "both_preferences_ready": both_preferences_ready,
         "both_locations_ready": both_locations_ready,
         "weighted_center": weighted_center,
-        "weight_a": weight_a,
-        "weight_b": weight_b,
+        "weights": weights,
+        "keys": keys,
+        "prefs_a": all_prefs[0] if len(all_prefs) > 0 else {},
+        "prefs_b": all_prefs[1] if len(all_prefs) > 1 else {},
+        "loc_a": all_locs[0] if len(all_locs) > 0 else {},
+        "loc_b": all_locs[1] if len(all_locs) > 1 else {},
+        "weight_a": weights[0] if weights and len(weights) > 0 else None,
+        "weight_b": weights[1] if weights and len(weights) > 1 else None,
+        "preferences_ready_count": sum(1 for p in all_prefs if p),
+        "locations_ready_count": sum(1 for loc in all_locs if loc),
     }
 
 
@@ -368,6 +484,51 @@ def _load_room_recommendation(room_id: str) -> Optional[Dict[str, Any]]:
     room_record = _get_room_record(room_id)
     rec = room_record.get("recommendation")
     return rec if isinstance(rec, dict) else None
+
+
+def _load_llm_settings() -> Tuple[Optional[str], str, Optional[str]]:
+    openai_key = (os.getenv("OPENAI_API_KEY") or "").strip() or None
+    model_name = (os.getenv("MODEL_NAME") or os.getenv("OPENAI_MODEL") or "gpt-4o-mini").strip()
+    openai_base = (os.getenv("OPENAI_API_BASE") or "").strip() or None
+    return openai_key, model_name, openai_base
+
+
+def _summarize_preference_context(prefs_a: Dict[str, Any], prefs_b: Dict[str, Any]) -> Tuple[float, str, str]:
+    budgets = [
+        float(value)
+        for value in (prefs_a.get("budget"), prefs_b.get("budget"))
+        if value not in (None, "")
+    ]
+    budget = sum(budgets) / len(budgets) if budgets else 50.0
+
+    cuisines: list[str] = []
+    for raw in (prefs_a.get("cuisine"), prefs_b.get("cuisine")):
+        cuisine = str(raw or "").strip()
+        if cuisine and cuisine.lower() not in {item.lower() for item in cuisines}:
+            cuisines.append(cuisine)
+    cuisine_label = " / ".join(cuisines) if cuisines else "flexible"
+
+    venue_types = _combine_venue_preferences(prefs_a, prefs_b)
+    primary_venue_type = venue_types[0] if venue_types else "restaurant"
+    return budget, cuisine_label, primary_venue_type
+
+
+def _render_recommendation_summary(text: str) -> None:
+    summary = str(text or "").strip()
+    if not summary:
+        return
+    safe_summary = html.escape(summary)
+    st.markdown(
+        f"""
+        <div style="background:linear-gradient(135deg,rgba(255,247,240,0.98),rgba(240,247,255,0.98));
+        border:1px solid rgba(80,130,200,0.18);border-radius:20px;padding:18px 22px;margin:10px 0 18px;
+        box-shadow:0 10px 26px rgba(40,80,130,0.08);">
+        <div style="font-size:1.02rem;font-weight:800;color:#18344f;margin-bottom:8px;">AI Recommendation Summary</div>
+        <div style="color:#3f5870;line-height:1.7;white-space:pre-wrap;">{safe_summary}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 def _save_room_recommendation(room_id: str, payload: Dict[str, Any]) -> None:
@@ -400,13 +561,13 @@ def _load_vote(room_id: str, user_role: str) -> list[str]:
     return list(raw.get("ranking", []))
 
 
-def _compute_combined_ranking(ranking_a: list[str], ranking_b: list[str]) -> list[str]:
+def _compute_combined_ranking(*rankings: list[str]) -> list[str]:
     """
     Borda-count merge: rank 1 = 3 pts, rank 2 = 2 pts, rank 3 = 1 pt.
     Returns venues sorted by descending combined score.
     """
     scores: Dict[str, int] = {}
-    for rank_list in (ranking_a, ranking_b):
+    for rank_list in rankings:
         borda = len(rank_list)
         for name in rank_list:
             scores[name] = scores.get(name, 0) + borda
@@ -418,6 +579,7 @@ def _reset_direct_flow_results() -> None:
     st.session_state.direct_candidates = []
     st.session_state.direct_votes = {"A": [], "B": []}
     st.session_state.direct_recommendation_meta = {}
+    st.session_state.direct_recommendation_text = ""
 
 
 def _load_direct_vote(user_role: str) -> list[str]:
@@ -476,6 +638,11 @@ def _normalize_venue_key(raw: str) -> str:
         "cafe": "cafe",
         "bar": "bar",
         "park": "park",
+        "mall": "mall",
+        "shopping": "mall",
+        "clothing": "clothing",
+        "clothing store": "clothing",
+        "department store": "department_store",
         "museum": "museum",
         "theater": "cinema",
         "cinema": "cinema",
@@ -516,19 +683,33 @@ def _build_room_recommendation(room_id: str, force: bool = False) -> Optional[Di
         ors_key = (os.getenv("OPENROUTESERVICE_API_KEY") or os.getenv("ORS_API_KEY") or "").strip() or None
         yelp_key = (os.getenv("YELP_API_KEY") or "").strip() or None
         tavily_key = (os.getenv("TAVILY_API_KEY") or "").strip()
-        openai_key = (os.getenv("OPENAI_API_KEY") or "").strip() or None
-        model_name = (os.getenv("MODEL_NAME") or os.getenv("OPENAI_MODEL") or "gpt-4o-mini").strip()
+        openai_key, model_name, openai_base = _load_llm_settings()
 
-        venue_type = _room_preferred_venue(summary)
-        cuisine_keyword = (summary.get("prefs_a", {}).get("cuisine") or summary.get("prefs_b", {}).get("cuisine") or "").strip()
+        # 多人支持：聚合所有人的location和preferences
+        all_prefs = summary.get("all_prefs", [])
+        all_locs = summary.get("all_locs", [])
+        n = len(all_prefs)
+        if n < 2:
+            return None
+        # venue_type和cuisine聚合（简单取第一个/合并）
+        venue_type = None
+        for p in all_prefs:
+            if p.get("venue_type"):
+                venue_type = p.get("venue_type")
+                break
+        if not venue_type:
+            venue_type = "restaurant"
+        cuisine_keyword = ""
+        for p in all_prefs:
+            if p.get("cuisine"):
+                cuisine_keyword = p.get("cuisine")
+                break
 
-        distance_a = float(summary.get("prefs_a", {}).get("distance_miles") or 15)
-        distance_b = float(summary.get("prefs_b", {}).get("distance_miles") or 15)
-        radius_a_km = max(1.0, distance_a) * 1.60934
-        radius_b_km = max(1.0, distance_b) * 1.60934
-
-        a_loc = Location(float(summary["loc_a"]["lat"]), float(summary["loc_a"]["lon"]))
-        b_loc = Location(float(summary["loc_b"]["lat"]), float(summary["loc_b"]["lon"]))
+        # 距离半径，取最大/平均
+        distances = [float(p.get("distance_miles", 15)) for p in all_prefs]
+        radii_km = [max(1.0, d) * 1.60934 for d in distances]
+        # 位置对象
+        loc_objs = [Location(float(l["lat"]), float(l["lon"])) for l in all_locs]
         center = Location(float(summary["weighted_center"]["lat"]), float(summary["weighted_center"]["lon"]))
 
         engine = MeetHalfwayRecommender(
@@ -538,15 +719,24 @@ def _build_room_recommendation(room_id: str, force: bool = False) -> Optional[Di
             tavily_key=tavily_key,
             openai_key=openai_key,
             openai_model=model_name,
+            openai_base=openai_base,
             transport="transit",
             low_cost_mode=True,
             use_yelp=False,
-            use_llm_extraction=False,
-            use_llm_summary=False,
+            use_llm_extraction=bool(openai_key),
+            use_llm_summary=bool(openai_key),
             max_enriched_candidates=2,
         )
 
-        intersection = engine.get_intersection_from_radii(a_loc, b_loc, radius_a_km, radius_b_km)
+        # 多人交集区域（需扩展engine，暂用所有人半径的交集/中心）
+        # 这里只做简单聚合，实际可扩展为多圆交集
+        intersection = None
+        if hasattr(engine, "get_intersection_from_radii"):
+            # 如果engine支持多点
+            try:
+                intersection = engine.get_intersection_from_radii(*loc_objs, *radii_km)
+            except Exception:
+                intersection = None
         candidates = engine.search_nearby_venues(
             center=center,
             venue_type=venue_type,
@@ -575,9 +765,9 @@ def _build_room_recommendation(room_id: str, force: bool = False) -> Optional[Di
         scored = []
         for c in candidates:
             place_loc = Location(float(c.lat), float(c.lon))
-            dist_a = engine.haversine_km(a_loc, place_loc)
-            dist_b = engine.haversine_km(b_loc, place_loc)
-            fairness_gap = abs(dist_a - dist_b)
+            # 多人公平性：最大-最小距离
+            dists = [engine.haversine_km(loc, place_loc) for loc in loc_objs]
+            fairness_gap = max(dists) - min(dists) if len(dists) > 1 else 0
             scored.append(
                 {
                     "name": c.name,
@@ -627,9 +817,97 @@ UI_TO_ENGINE_VENUE = {
     "Cafe": "cafe",
     "Bar": "bar",
     "Park": "park",
+    "Mall": "mall",
+    "Shopping": "mall",
+    "Clothing Store": "clothing",
+    "Department Store": "department_store",
     "Museum": "museum",
     "Theater": "cinema",
+    "Parking": "parking",
 }
+DIRECT_MEETING_TYPE_OPTIONS = [
+    "Breakfast Date",
+    "Dinner Date",
+    "Coffee Chat",
+    "Casual Hangout",
+    "Business Meeting",
+    "Shopping Trip",
+]
+ROOM_MEETING_TYPE_OPTIONS = [
+    "Breakfast Date",
+    "Dinner Date",
+    "Lunch Date",
+    "Coffee",
+    "Business Meeting",
+    "Shopping Trip",
+    "Mall Hangout",
+    "Drinks",
+    "Activity",
+    "Other",
+]
+TIME_BAND_LABELS = {
+    "morning": "morning",
+    "midday": "midday",
+    "afternoon": "afternoon",
+    "evening": "evening",
+    "night": "night",
+}
+
+BUSINESS_MEETING_TYPES = {"business meeting", "client meeting", "team meeting"}
+BUSINESS_VENUE_PRIORITY = ["cafe", "restaurant", "mall"]
+BUSINESS_KEYWORDS = [
+    "quiet business cafe",
+    "hotel lobby cafe",
+    "business lunch restaurant",
+    "quiet meeting cafe",
+]
+SHOPPING_MEETING_TYPES = {"shopping trip", "mall hangout", "shopping", "clothes shopping"}
+SHOPPING_VENUE_PRIORITY = ["mall", "clothing", "department_store"]
+SHOPPING_KEYWORDS = [
+    "shopping mall",
+    "clothing store",
+    "fashion apparel",
+    "department store",
+]
+
+
+def _is_business_meeting_type(value: Any) -> bool:
+    return str(value or "").strip().lower() in BUSINESS_MEETING_TYPES
+
+
+def _is_business_context_from_prefs(prefs: list[Dict[str, Any]]) -> bool:
+    return any(_is_business_meeting_type(pref.get("meeting_type")) for pref in prefs if isinstance(pref, dict))
+
+
+def _business_mode_label(is_business: bool) -> str:
+    return "Business meeting" if is_business else "Social meetup"
+
+
+def _is_shopping_meeting_type(value: Any) -> bool:
+    return str(value or "").strip().lower() in SHOPPING_MEETING_TYPES
+
+
+def _is_shopping_context_from_prefs(prefs: list[Dict[str, Any]]) -> bool:
+    for pref in prefs:
+        if not isinstance(pref, dict):
+            continue
+        if _is_shopping_meeting_type(pref.get("meeting_type")):
+            return True
+        raw_venues = pref.get("venue_type") or []
+        if isinstance(raw_venues, str):
+            raw_venues = [raw_venues]
+        engine_venues = {UI_TO_ENGINE_VENUE.get(str(v), _normalize_venue_key(str(v))) for v in raw_venues}
+        if engine_venues.intersection(SHOPPING_VENUE_PRIORITY):
+            return True
+    return False
+
+
+def _meeting_mode_label(is_business: bool, is_shopping: bool) -> str:
+    if is_business:
+        return "Business meeting"
+    if is_shopping:
+        return "Shopping"
+    return "Social meetup"
 
 
 def _format_time_slot_label(slot: str) -> str:
@@ -646,10 +924,141 @@ def _format_time_slot_label(slot: str) -> str:
         return slot
 
 
+def _slot_to_minutes(slot: str) -> Optional[int]:
+    try:
+        hour, minute = slot.split(":", 1)
+        hh = int(hour)
+        mm = int(minute)
+        if hh < 0 or hh > 23 or mm not in (0, 30):
+            return None
+        return hh * 60 + mm
+    except Exception:
+        return None
+
+
+def _slot_to_time_band(slot: str) -> Optional[str]:
+    minutes = _slot_to_minutes(slot)
+    if minutes is None:
+        return None
+    if minutes < 11 * 60:
+        return "morning"
+    if minutes < 15 * 60:
+        return "midday"
+    if minutes < 18 * 60:
+        return "afternoon"
+    if minutes < 22 * 60:
+        return "evening"
+    return "night"
+
+
+def _meeting_type_expected_bands(meeting_type: Any) -> set[str]:
+    key = str(meeting_type or "").strip().lower()
+    mapping = {
+        "breakfast": {"morning"},
+        "breakfast date": {"morning"},
+        "brunch": {"morning", "midday"},
+        "lunch": {"midday"},
+        "lunch date": {"midday"},
+        "coffee": {"morning", "midday", "afternoon"},
+        "coffee chat": {"morning", "midday", "afternoon"},
+        "drinks": {"evening", "night"},
+        "dinner": {"evening", "night"},
+        "dinner date": {"evening", "night"},
+        "business meeting": {"morning", "midday", "afternoon"},
+    }
+    return set(mapping.get(key, set()))
+
+
+def _analyze_meeting_time_alignment(
+    prefs_a: Dict[str, Any],
+    prefs_b: Dict[str, Any],
+    overlap_slots: list[str],
+) -> Dict[str, Any]:
+    def _analyze_person(label: str, prefs: Dict[str, Any]) -> Dict[str, Any]:
+        meeting_type = str(prefs.get("meeting_type", "") or "")
+        availability_slots = list(prefs.get("availability_slots", []) or [])
+        expected_bands = _meeting_type_expected_bands(meeting_type)
+        slot_bands = {
+            band for band in (_slot_to_time_band(slot) for slot in availability_slots) if band
+        }
+        self_mismatch = bool(expected_bands and slot_bands and expected_bands.isdisjoint(slot_bands))
+        return {
+            "person": label,
+            "meeting_type": meeting_type,
+            "availability_slots": availability_slots,
+            "expected_bands": sorted(expected_bands),
+            "slot_bands": sorted(slot_bands),
+            "self_mismatch": self_mismatch,
+        }
+
+    person_a = _analyze_person("A", prefs_a)
+    person_b = _analyze_person("B", prefs_b)
+    overlap_bands = {
+        band for band in (_slot_to_time_band(slot) for slot in overlap_slots) if band
+    }
+    hard_conflict = (
+        not overlap_slots
+        and not person_a["self_mismatch"]
+        and not person_b["self_mismatch"]
+        and bool(person_a["expected_bands"])
+        and bool(person_b["expected_bands"])
+        and set(person_a["expected_bands"]).isdisjoint(set(person_b["expected_bands"]))
+    )
+    return {
+        "person_a": person_a,
+        "person_b": person_b,
+        "overlap_bands": sorted(overlap_bands),
+        "self_mismatch_people": [
+            person["person"] for person in (person_a, person_b) if person.get("self_mismatch")
+        ],
+        "hard_conflict": hard_conflict,
+    }
+
+
 def _compute_shared_time_overlap(a_slots: list[str], b_slots: list[str]) -> list[str]:
     order = {slot: idx for idx, slot in enumerate(TIME_SLOT_OPTIONS)}
     overlap = sorted(set(a_slots or []).intersection(set(b_slots or [])), key=lambda x: order.get(x, 999))
     return overlap
+
+
+def _build_negotiation_time_slots(a_slots: list[str], b_slots: list[str]) -> list[str]:
+    """Build ordered candidate slots for conflict-time negotiation.
+
+    Prefer the union of both users' selected slots so scoring stays aligned with
+    actual user intent instead of fixed default evening slots.
+    """
+    order = {slot: idx for idx, slot in enumerate(TIME_SLOT_OPTIONS)}
+    merged = sorted(set(a_slots or []).union(set(b_slots or [])), key=lambda x: order.get(x, 999))
+    return merged
+
+
+def _analyze_time_conflict(a_slots: list[str], b_slots: list[str]) -> Dict[str, Any]:
+    overlap = _compute_shared_time_overlap(a_slots, b_slots)
+    if overlap:
+        return {"has_overlap": True, "closest_gap_minutes": 0.0, "severe_gap": False}
+
+    a_pairs = [(_slot_to_minutes(slot), slot) for slot in list(a_slots or [])]
+    b_pairs = [(_slot_to_minutes(slot), slot) for slot in list(b_slots or [])]
+    a_pairs = [(m, s) for m, s in a_pairs if m is not None]
+    b_pairs = [(m, s) for m, s in b_pairs if m is not None]
+    if not a_pairs or not b_pairs:
+        return {"has_overlap": False, "closest_gap_minutes": None, "severe_gap": False}
+
+    best_gap = 24 * 60
+    best_pair = (a_pairs[0][1], b_pairs[0][1])
+    for min_a, slot_a in a_pairs:
+        for min_b, slot_b in b_pairs:
+            gap = abs(min_a - min_b)
+            if gap < best_gap:
+                best_gap = gap
+                best_pair = (slot_a, slot_b)
+
+    return {
+        "has_overlap": False,
+        "closest_gap_minutes": float(best_gap),
+        "closest_pair": best_pair,
+        "severe_gap": best_gap > 120,
+    }
 
 
 def _build_recommendation_meta(
@@ -658,9 +1067,15 @@ def _build_recommendation_meta(
     prefs_a: Dict[str, Any],
     prefs_b: Dict[str, Any],
     open_status_stats: Optional[Dict[str, int]] = None,
+    radius_negotiation: Optional[Dict[str, Any]] = None,
+    time_negotiation: Optional[Dict[str, Any]] = None,
+    meeting_time_alignment: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     time_overlap_exists = bool(overlap_slots)
     stats = open_status_stats or {}
+    radius_negotiation = radius_negotiation or {}
+    time_negotiation = time_negotiation or {}
+    meeting_time_alignment = meeting_time_alignment or {}
     return {
         "search_area_mode": area_mode,
         "radius_overlap_exists": area_mode == "intersection",
@@ -672,6 +1087,9 @@ def _build_recommendation_meta(
         "open_count": int(stats.get("open", 0) or 0),
         "uncertain_count": int(stats.get("uncertain", 0) or 0),
         "closed_filtered_count": int(stats.get("closed", 0) or 0),
+        "radius_negotiation": radius_negotiation,
+        "time_negotiation": time_negotiation,
+        "meeting_time_alignment": meeting_time_alignment,
     }
 
 
@@ -679,11 +1097,77 @@ def _render_recommendation_warnings(meta: Dict[str, Any]) -> None:
     if not meta:
         return
 
+    if str(meta.get("meeting_mode", "")).lower().startswith("business"):
+        st.info(
+            "Business mode: venues are ranked for a quieter professional setting, neutral location, arrival reliability, and nearby parking."
+        )
+    elif str(meta.get("meeting_mode", "")).lower().startswith("shopping"):
+        st.info(
+            "Shopping mode: recommendations favor malls, clothing stores, and department stores near the fair meeting area, with parking shown when available."
+        )
+
     if not meta.get("radius_overlap_exists", True):
         st.warning(
             "System warning: the two commute-radius areas do not overlap. "
             "Recommendations are still shown, but they come from the combined reachable area and may lean closer to one person."
         )
+
+    radius_negotiation = meta.get("radius_negotiation", {}) or {}
+    if radius_negotiation.get("negotiation_applied"):
+        st.info(
+            "Radius negotiation applied: "
+            f"Person A +{float(radius_negotiation.get('extra_a_km', 0.0)):.2f} km, "
+            f"Person B +{float(radius_negotiation.get('extra_b_km', 0.0)):.2f} km "
+            "to recover overlap."
+        )
+    elif radius_negotiation.get("too_far"):
+        st.error(
+            "Distance check: these two locations are currently too far apart for a fair overlap-based recommendation. "
+            "Try selecting closer locations or much larger commute ranges."
+        )
+
+    time_negotiation = meta.get("time_negotiation", {}) or {}
+    meeting_time_alignment = meta.get("meeting_time_alignment", {}) or {}
+    for person_key in ("person_a", "person_b"):
+        person = meeting_time_alignment.get(person_key, {}) or {}
+        if person.get("self_mismatch"):
+            slot_text = ", ".join(
+                _format_time_slot_label(slot) for slot in (person.get("availability_slots") or [])[:6]
+            ) or "none selected"
+            band_text = ", ".join(
+                TIME_BAND_LABELS.get(str(band), str(band)) for band in (person.get("expected_bands") or [])
+            ) or "flexible times"
+            st.warning(
+                f"Preference check: Person {person.get('person', '?')} selected '{person.get('meeting_type', 'Unknown')}', "
+                f"but their available times look more like {slot_text}. This meeting type usually fits {band_text}, "
+                "so please confirm whether the meetup type or the time selection was chosen incorrectly."
+            )
+
+    if meeting_time_alignment.get("hard_conflict"):
+        person_a = meeting_time_alignment.get("person_a", {}) or {}
+        person_b = meeting_time_alignment.get("person_b", {}) or {}
+        st.error(
+            "Meal-time mismatch: the two people are available in different parts of the day, and their selected meetup types also point to different meal windows. "
+            "Please align both the time selection and the meetup type before relying on the recommendations below."
+        )
+        st.caption(
+            f"Person A: {person_a.get('meeting_type', 'Unknown')} | Person B: {person_b.get('meeting_type', 'Unknown')}"
+        )
+
+    if time_negotiation.get("severe_gap"):
+        gap_minutes = float(time_negotiation.get("closest_gap_minutes", 0.0) or 0.0)
+        gap_hours = gap_minutes / 60.0
+        closest_pair = time_negotiation.get("closest_pair") or ("", "")
+        st.warning(
+            f"Time coordination warning: the closest available slots are still {gap_hours:.1f} hours apart. "
+            "Recommendations are shown at reduced confidence, so both people should negotiate the final meeting time manually."
+        )
+        if closest_pair[0] and closest_pair[1]:
+            st.caption(
+                "Closest attempted compromise: "
+                f"Person A {_format_time_slot_label(str(closest_pair[0]))}, "
+                f"Person B {_format_time_slot_label(str(closest_pair[1]))}."
+            )
 
     if not meta.get("time_overlap_exists", True):
         a_slots = meta.get("person_a_slots", [])
@@ -729,7 +1213,102 @@ def _distance_miles_to_minutes(distance_miles: float, mode: Optional[str]) -> fl
     return max(5.0, float(distance_miles) * 1.60934 / speed_km_per_min)
 
 
+def _resolve_search_area_with_radius_negotiation(
+    engine: MeetHalfwayRecommender,
+    loc_a: Location,
+    loc_b: Location,
+    prefs_a: Dict[str, Any],
+    prefs_b: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Compute search area and, when needed, negotiate small mode-aware radius extensions."""
+    radius_a_km = max(1.0, float(prefs_a.get("distance_miles", 15)) * 1.60934)
+    radius_b_km = max(1.0, float(prefs_b.get("distance_miles", 15)) * 1.60934)
+    first_area = engine.get_search_area_from_radii(loc_a, loc_b, radius_a_km, radius_b_km)
+    distance_km = engine.haversine_km(loc_a, loc_b)
+    required_extra_total = max(0.0, distance_km - (radius_a_km + radius_b_km))
+
+    detail: Dict[str, Any] = {
+        "distance_km": round(distance_km, 2),
+        "base_radius_a_km": round(radius_a_km, 2),
+        "base_radius_b_km": round(radius_b_km, 2),
+        "required_extra_total_km": round(required_extra_total, 2),
+        "negotiation_applied": False,
+        "too_far": False,
+        "extra_a_km": 0.0,
+        "extra_b_km": 0.0,
+    }
+
+    if first_area.get("overlap_exists"):
+        return {"search_area": first_area, "detail": detail}
+
+    ABSOLUTE_DISTANCE_LIMIT_KM = 120.0
+    MAX_NEGOTIABLE_EXTRA_TOTAL_KM = 18.0
+    MAX_NEGOTIABLE_EXTRA_PER_PERSON_KM = 12.0
+
+    if distance_km > ABSOLUTE_DISTANCE_LIMIT_KM or required_extra_total > MAX_NEGOTIABLE_EXTRA_TOTAL_KM:
+        detail["too_far"] = True
+        detail["too_far_reason"] = "distance_too_large"
+        return {"search_area": first_area, "detail": detail}
+
+    mode_a = normalize_transport_mode(prefs_a.get("travel_mode"))
+    mode_b = normalize_transport_mode(prefs_b.get("travel_mode"))
+    mode_flex = {"walk": 0.75, "transit": 1.0, "drive": 1.35}
+
+    flex_a = mode_flex.get(mode_a, 1.0) * min(1.4, max(0.8, radius_a_km / 12.0))
+    flex_b = mode_flex.get(mode_b, 1.0) * min(1.4, max(0.8, radius_b_km / 12.0))
+    flex_sum = max(0.01, flex_a + flex_b)
+
+    extra_a = min(MAX_NEGOTIABLE_EXTRA_PER_PERSON_KM, required_extra_total * flex_a / flex_sum)
+    extra_b = min(MAX_NEGOTIABLE_EXTRA_PER_PERSON_KM, required_extra_total * flex_b / flex_sum)
+    still_missing = max(0.0, required_extra_total - (extra_a + extra_b))
+
+    if still_missing > 0.1:
+        detail["too_far"] = True
+        detail["too_far_reason"] = "extra_cap_exceeded"
+        detail["extra_a_km"] = round(extra_a, 2)
+        detail["extra_b_km"] = round(extra_b, 2)
+        return {"search_area": first_area, "detail": detail}
+
+    expanded_area = engine.get_search_area_from_radii(
+        loc_a,
+        loc_b,
+        radius_a_km + extra_a,
+        radius_b_km + extra_b,
+    )
+    detail.update(
+        {
+            "negotiation_applied": True,
+            "mode_a": mode_a,
+            "mode_b": mode_b,
+            "extra_a_km": round(extra_a, 2),
+            "extra_b_km": round(extra_b, 2),
+            "expanded_radius_a_km": round(radius_a_km + extra_a, 2),
+            "expanded_radius_b_km": round(radius_b_km + extra_b, 2),
+            "negotiated_overlap_exists": bool(expanded_area.get("overlap_exists")),
+        }
+    )
+    return {"search_area": expanded_area, "detail": detail}
+
+
 def _combine_venue_preferences(prefs_a: Dict[str, Any], prefs_b: Dict[str, Any]) -> list[str]:
+    if _is_business_context_from_prefs([prefs_a, prefs_b]):
+        selected: list[str] = []
+        raw_values = list(prefs_a.get("venue_type", []) or []) + list(prefs_b.get("venue_type", []) or [])
+        for raw in raw_values:
+            venue = UI_TO_ENGINE_VENUE.get(str(raw), _normalize_venue_key(str(raw)))
+            if venue in BUSINESS_VENUE_PRIORITY and venue not in selected:
+                selected.append(venue)
+        return selected + [venue for venue in BUSINESS_VENUE_PRIORITY if venue not in selected]
+
+    if _is_shopping_context_from_prefs([prefs_a, prefs_b]):
+        selected: list[str] = []
+        raw_values = list(prefs_a.get("venue_type", []) or []) + list(prefs_b.get("venue_type", []) or [])
+        for raw in raw_values:
+            venue = UI_TO_ENGINE_VENUE.get(str(raw), _normalize_venue_key(str(raw)))
+            if venue in SHOPPING_VENUE_PRIORITY and venue not in selected:
+                selected.append(venue)
+        return selected + [venue for venue in SHOPPING_VENUE_PRIORITY if venue not in selected]
+
     set_a = {UI_TO_ENGINE_VENUE.get(v, "restaurant") for v in prefs_a.get("venue_type", [])}
     set_b = {UI_TO_ENGINE_VENUE.get(v, "restaurant") for v in prefs_b.get("venue_type", [])}
     overlap = [v for v in set_a.intersection(set_b) if v]
@@ -737,6 +1316,114 @@ def _combine_venue_preferences(prefs_a: Dict[str, Any], prefs_b: Dict[str, Any])
         return sorted(overlap)
     combined = [v for v in set_a.union(set_b) if v]
     return sorted(combined) or ["restaurant"]
+
+
+def _build_cuisine_keyword_plan(prefs_a: Dict[str, Any], prefs_b: Dict[str, Any]) -> list[str]:
+    if _is_business_context_from_prefs([prefs_a, prefs_b]):
+        cuisine_terms = [
+            str(p.get("cuisine", "")).strip()
+            for p in (prefs_a, prefs_b)
+            if str(p.get("cuisine", "")).strip()
+        ]
+        if cuisine_terms:
+            return [f"{term} business lunch quiet" for term in cuisine_terms[:2]] + BUSINESS_KEYWORDS
+        return BUSINESS_KEYWORDS.copy()
+
+    if _is_shopping_context_from_prefs([prefs_a, prefs_b]):
+        shopping_terms = [
+            str(p.get("cuisine", "")).strip()
+            for p in (prefs_a, prefs_b)
+            if str(p.get("cuisine", "")).strip()
+        ]
+        if shopping_terms:
+            return shopping_terms[:3] + [f"{term} clothing store" for term in shopping_terms[:2]] + SHOPPING_KEYWORDS
+        return SHOPPING_KEYWORDS.copy()
+
+    raw = [str(prefs_a.get("cuisine", "")).strip(), str(prefs_b.get("cuisine", "")).strip()]
+    cuisines: list[str] = []
+    for cuisine in raw:
+        normalized = cuisine.lower()
+        if cuisine and normalized not in {item.lower() for item in cuisines}:
+            cuisines.append(cuisine)
+
+    if not cuisines:
+        return []
+    if len(cuisines) == 1:
+        return cuisines
+
+    combined_phrase = " ".join(cuisines)
+    return [f"{combined_phrase} fusion", combined_phrase, *cuisines]
+
+
+def _search_with_cuisine_fallback(
+    engine: MeetHalfwayRecommender,
+    center: Location,
+    venue_type: str,
+    search_limit: int,
+    intersection: Any,
+    cuisine_plan: list[str],
+) -> list[Any]:
+    if venue_type != "restaurant":
+        if cuisine_plan:
+            dedupe: Dict[Tuple[str, float, float], Any] = {}
+            for keyword in cuisine_plan[:2]:
+                found = engine.search_nearby_venues(
+                    center,
+                    venue_type=venue_type,
+                    keyword=keyword,
+                    limit=search_limit,
+                    intersection=intersection,
+                )
+                for item in found:
+                    dedupe[(item.name.lower(), round(item.lat, 4), round(item.lon, 4))] = item
+            if dedupe:
+                return list(dedupe.values())
+        return engine.search_nearby_venues(
+            center,
+            venue_type=venue_type,
+            keyword="",
+            limit=search_limit,
+            intersection=intersection,
+        )
+
+    dedupe: Dict[Tuple[str, float, float], Any] = {}
+    combined_keywords = cuisine_plan[:2] if len(cuisine_plan) > 1 else cuisine_plan
+    single_keywords = cuisine_plan[2:] if len(cuisine_plan) > 2 else []
+
+    for keyword in combined_keywords:
+        found = engine.search_nearby_venues(
+            center,
+            venue_type=venue_type,
+            keyword=keyword,
+            limit=search_limit,
+            intersection=intersection,
+        )
+        for item in found:
+            dedupe[(item.name.lower(), round(item.lat, 4), round(item.lon, 4))] = item
+        if dedupe:
+            return list(dedupe.values())
+
+    for keyword in single_keywords:
+        found = engine.search_nearby_venues(
+            center,
+            venue_type=venue_type,
+            keyword=keyword,
+            limit=search_limit,
+            intersection=intersection,
+        )
+        for item in found:
+            dedupe[(item.name.lower(), round(item.lat, 4), round(item.lon, 4))] = item
+
+    if dedupe:
+        return list(dedupe.values())
+
+    return engine.search_nearby_venues(
+        center,
+        venue_type=venue_type,
+        keyword="",
+        limit=search_limit,
+        intersection=intersection,
+    )
 
 
 def _apply_ambiance_preference(candidates: list, pref_a: str, pref_b: str) -> list:
@@ -751,96 +1438,191 @@ def _apply_ambiance_preference(candidates: list, pref_a: str, pref_b: str) -> li
     return candidates
 
 
+def _apply_business_meeting_fit(candidates: list, is_business: bool) -> list:
+    if not is_business:
+        return candidates
+    for candidate in candidates:
+        crowd_index = float((getattr(candidate, "web_signals", {}) or {}).get("crowd_index", 0.5))
+        quiet_score = max(0.0, 1.0 - crowd_index)
+        category = str(getattr(candidate, "venue_category", "restaurant") or "restaurant")
+        venue_score = {"cafe": 1.0, "restaurant": 0.78, "mall": 0.62}.get(category, 0.35)
+        parking_score = 1.0 if getattr(candidate, "parking_recommendations", None) else 0.35
+        business_fit = 0.45 * quiet_score + 0.35 * venue_score + 0.20 * parking_score
+        candidate.score_breakdown["business_fit"] = round(business_fit, 4)
+        candidate.final_score += 0.22 * business_fit
+    candidates.sort(key=lambda x: x.final_score, reverse=True)
+    return candidates
+
+
 def _compute_room_recommendations(room_id: str) -> Dict[str, Any]:
+    """Generate recommendations for a room with 2-5 participants."""
     summary = _preference_summary(room_id)
     if not (summary["both_preferences_ready"] and summary["both_locations_ready"] and summary["weighted_center"]):
         return {"status": "incomplete", "summary": summary}
 
-    prefs_a = summary["prefs_a"]
-    prefs_b = summary["prefs_b"]
-    loc_a = Location(float(summary["loc_a"]["lat"]), float(summary["loc_a"]["lon"]))
-    loc_b = Location(float(summary["loc_b"]["lat"]), float(summary["loc_b"]["lon"]))
-    center = Location(float(summary["weighted_center"]["lat"]), float(summary["weighted_center"]["lon"]))
+    all_prefs = summary["all_prefs"]
+    all_locs = summary["all_locs"]
+    n = len(all_prefs)
+    business_context = _is_business_context_from_prefs(all_prefs)
+    shopping_context = _is_shopping_context_from_prefs(all_prefs)
+    if n < 2:
+        return {"status": "incomplete", "summary": summary}
 
-    transport = _preferred_engine_transport(prefs_a.get("travel_mode"), prefs_b.get("travel_mode"))
+    transport_counts: Dict[str, int] = {}
+    for pref in all_prefs:
+        mode = normalize_transport_mode(pref.get("travel_mode"))
+        transport_counts[mode] = transport_counts.get(mode, 0) + 1
+    transport = max(transport_counts, key=transport_counts.get)
+
+    openai_key, model_name, openai_base = _load_llm_settings()
     engine = MeetHalfwayRecommender(
         mapbox_token=os.getenv("MAPBOX_ACCESS_TOKEN", "").strip(),
         ors_api_key=os.getenv("OPENROUTESERVICE_API_KEY", "").strip() or None,
         yelp_api_key=os.getenv("YELP_API_KEY", "").strip() or None,
         tavily_key=os.getenv("TAVILY_API_KEY", "").strip(),
-        openai_key=os.getenv("OPENAI_API_KEY", "").strip() or None,
-        openai_model=os.getenv("MODEL_NAME", "llama-3.3-70b-versatile").strip(),
-        openai_base=os.getenv("OPENAI_API_BASE", "").strip() or None,
+        openai_key=openai_key,
+        openai_model=model_name,
+        openai_base=openai_base,
         transport=transport,
         isochrone_minutes=20,
         use_yelp=True,
-        use_llm_extraction=False,
-        use_llm_summary=False,
+        use_llm_extraction=bool(openai_key),
+        use_llm_summary=bool(openai_key),
         low_cost_mode=True,
     )
 
-    radius_a_km = max(1.0, float(prefs_a.get("distance_miles", 15)) * 1.60934)
-    radius_b_km = max(1.0, float(prefs_b.get("distance_miles", 15)) * 1.60934)
-    search_area = engine.get_search_area_from_radii(loc_a, loc_b, radius_a_km, radius_b_km)
-    intersection = search_area.get("geometry")
-    area_mode = str(search_area.get("mode") or "unknown")
+    loc_objs = [Location(float(l["lat"]), float(l["lon"])) for l in all_locs]
+    center = Location(float(summary["weighted_center"]["lat"]), float(summary["weighted_center"]["lon"]))
+    radii_km = [max(1.0, float(p.get("distance_miles", 15))) * 1.60934 for p in all_prefs]
+    intersection = None
+    area_mode = "unknown"
+    try:
+        circles = [engine.get_distance_circle(loc, radius_km) for loc, radius_km in zip(loc_objs, radii_km)]
+        circles = [circle for circle in circles if circle is not None]
+        if circles:
+            intersection = circles[0]
+            for circle in circles[1:]:
+                intersection = intersection.intersection(circle)
+            if getattr(intersection, "is_empty", False):
+                intersection = circles[0]
+                for circle in circles[1:]:
+                    intersection = intersection.union(circle)
+                area_mode = "union_fallback"
+            else:
+                area_mode = "intersection"
+    except Exception:
+        intersection = None
+        area_mode = "unknown"
 
-    cuisines = [str(prefs_a.get("cuisine", "")).strip(), str(prefs_b.get("cuisine", "")).strip()]
-    cuisine_keyword = next((c for c in cuisines if c), "")
-    venue_types = _combine_venue_preferences(prefs_a, prefs_b)
-    search_limit = 8
+    cuisine_plan = [str(p.get("cuisine", "")).strip() for p in all_prefs if str(p.get("cuisine", "")).strip()][:3]
+    if business_context:
+        cuisine_plan = (cuisine_plan + BUSINESS_KEYWORDS)[:5] if cuisine_plan else BUSINESS_KEYWORDS.copy()
+    elif shopping_context:
+        cuisine_plan = (cuisine_plan + [f"{term} clothing store" for term in cuisine_plan] + SHOPPING_KEYWORDS)[:7] if cuisine_plan else SHOPPING_KEYWORDS.copy()
+    venue_types: list[str] = []
+    for pref in all_prefs:
+        raw_venues = pref.get("venue_type") or ["Restaurant"]
+        if isinstance(raw_venues, str):
+            raw_venues = [raw_venues]
+        for raw in raw_venues:
+            venue = UI_TO_ENGINE_VENUE.get(str(raw), _normalize_venue_key(str(raw)))
+            if venue not in venue_types:
+                venue_types.append(venue)
+    if business_context:
+        venue_types = [v for v in BUSINESS_VENUE_PRIORITY if v in venue_types] + [v for v in BUSINESS_VENUE_PRIORITY if v not in venue_types]
+    elif shopping_context:
+        venue_types = [v for v in SHOPPING_VENUE_PRIORITY if v in venue_types] + [v for v in SHOPPING_VENUE_PRIORITY if v not in venue_types]
+    venue_types = venue_types[:3] if venue_types else ["restaurant"]
+
     dedupe: Dict[Tuple[str, float, float], Any] = {}
-    for venue_type in venue_types[:3]:
-        keyword = cuisine_keyword if venue_type == "restaurant" else ""
-        found = engine.search_nearby_venues(center, venue_type=venue_type, keyword=keyword, limit=search_limit, intersection=intersection)
-        for item in found:
+    for venue_type in venue_types:
+        for item in _search_with_cuisine_fallback(engine, center, venue_type, 8, intersection, cuisine_plan):
             dedupe[(item.name.lower(), round(item.lat, 4), round(item.lon, 4))] = item
-
     candidates = list(dedupe.values())
     if not candidates:
         return {"status": "no_candidates", "summary": summary}
 
     engine.tag_with_isochrone(candidates, intersection, area_mode=area_mode)
-    overlap_slots = _compute_shared_time_overlap(prefs_a.get("availability_slots", []), prefs_b.get("availability_slots", []))
+    all_slots = [set(p.get("availability_slots", []) or []) for p in all_prefs]
+    if not all(all_slots):
+        return {
+            "status": "missing_time_selection",
+            "summary": summary,
+            "recommendation_meta": {"area_mode": area_mode, "participant_count": n},
+        }
+    overlap_slots = sorted(set.intersection(*all_slots))
     time_conflict = not bool(overlap_slots)
-    selected_slots = overlap_slots or ["18:00", "18:30", "19:00"]
-    time_label = _format_time_slot_label(selected_slots[0]) if overlap_slots else "Flexible"
-    recommendation_meta = _build_recommendation_meta(area_mode, overlap_slots, prefs_a, prefs_b)
+    selected_slots = overlap_slots or sorted(set.union(*all_slots))
+    time_label = _format_time_slot_label(selected_slots[0]) if selected_slots else "Flexible"
 
     try:
-        asyncio.run(engine.enrich_all_async(candidates, city_hint="", year_hint=2026, time_slot=time_label, party_size=2))
+        asyncio.run(engine.enrich_all_async(candidates, city_hint="", year_hint=2026, time_slot=time_label, party_size=n))
     except Exception:
         pass
 
     candidates, open_status_stats = engine.filter_closed_candidates(candidates)
-    recommendation_meta = _build_recommendation_meta(area_mode, overlap_slots, prefs_a, prefs_b, open_status_stats)
     if not candidates:
         return {
             "status": "no_open_candidates",
             "summary": summary,
-            "recommendation_meta": recommendation_meta,
+            "recommendation_meta": {"area_mode": area_mode, "participant_count": n, "open_status_stats": open_status_stats},
         }
 
-    scored = engine.score_candidates(
-        loc_a,
-        loc_b,
-        center,
-        candidates,
-        w_dist=0.34,
-        w_rating=0.25,
-        w_pref=0.21,
-        time_slots=selected_slots,
-        availability={
-            "a": prefs_a.get("availability_slots", []),
-            "b": prefs_b.get("availability_slots", []),
-        },
-        radius_tolerance={
-            "a": _distance_miles_to_minutes(prefs_a.get("distance_miles", 15), prefs_a.get("travel_mode")),
-            "b": _distance_miles_to_minutes(prefs_b.get("distance_miles", 15), prefs_b.get("travel_mode")),
-        },
-        time_conflict=time_conflict,
-    )
-    scored = _apply_ambiance_preference(scored, prefs_a.get("ambiance_preference", "balanced"), prefs_b.get("ambiance_preference", "balanced"))
+    if business_context:
+        _attach_parking_recommendations(candidates, engine, limit_per_venue=2)
+
+    max_center_dist = max((float(getattr(c, "distance_to_center_km", 0.0) or 0.0) for c in candidates), default=1.0) or 1.0
+    ambiance_targets = {"quiet": 0.22, "balanced": 0.55, "lively": 0.82}
+    target_ambiance = 0.22 if business_context else sum(ambiance_targets.get(p.get("ambiance_preference", "balanced"), 0.55) for p in all_prefs) / n
+    for c in candidates:
+        place_loc = Location(float(c.lat), float(c.lon))
+        dists = [engine.haversine_km(loc, place_loc) for loc in loc_objs]
+        fairness_gap_km = max(dists) - min(dists) if len(dists) > 1 else 0.0
+        distance_score = max(0.0, 1.0 - (float(getattr(c, "distance_to_center_km", 0.0) or 0.0) / max_center_dist))
+        fairness_score = max(0.0, 1.0 - fairness_gap_km / 20.0)
+        rating_score = float(getattr(c, "rating_proxy", 0.5) or 0.5)
+        crowd_index = float((getattr(c, "web_signals", {}) or {}).get("crowd_index", 0.5))
+        crowd_score = max(0.0, 1.0 - crowd_index)
+        ambiance_score = max(0.0, 1.0 - abs(crowd_index - target_ambiance) / 0.85)
+        c.fairness_delta_minutes = fairness_gap_km / 35.0 * 60.0
+        c.best_time_slot = _format_time_slot_label(selected_slots[0]) if (selected_slots and not time_conflict) else ""
+        c.time_conflict = time_conflict
+        c.group_distance_km = [round(d, 3) for d in dists]
+        c.group_fairness_gap_km = round(fairness_gap_km, 3)
+        c.score_breakdown = {
+            "distance": round(distance_score, 4),
+            "group_fairness": round(fairness_score, 4),
+            "rating": round(rating_score, 4),
+            "crowd": round(crowd_score, 4),
+            "ambiance_fit": round(ambiance_score, 4),
+        }
+        c.final_score = 0.30 * fairness_score + 0.20 * distance_score + 0.22 * rating_score + 0.16 * crowd_score + 0.12 * ambiance_score
+    candidates.sort(key=lambda x: x.final_score, reverse=True)
+    candidates = _apply_business_meeting_fit(candidates, business_context)
+    _attach_parking_recommendations(candidates[:5], engine)
+
+    budget_values = [float(p.get("budget")) for p in all_prefs if p.get("budget") not in (None, "")]
+    budget = sum(budget_values) / len(budget_values) if budget_values else 50.0
+    cuisine_label = " / ".join(cuisine_plan) if cuisine_plan else "flexible"
+    if business_context:
+        recommendation_text = (
+            f"Business meeting recommendation for {n} people. I prioritized neutral, quiet, professional venues, "
+            f"reasonable commute balance, reliable arrival logistics, and nearby parking. Shared time: {time_label}. "
+            f"Average budget: ${budget:.0f} per person."
+        )
+    elif shopping_context:
+        shopping_goal = " / ".join([term for term in cuisine_plan[:3] if term not in SHOPPING_KEYWORDS]) or "shopping"
+        recommendation_text = (
+            f"Shopping recommendation for {n} people. I searched for malls, clothing stores, and department stores "
+            f"near the fair meeting area, using the shopping goal: {shopping_goal}. Shared time: {time_label}. "
+            "Parking options are included for each destination when available."
+        )
+    else:
+        recommendation_text = (
+            f"Group recommendation for {n} people. I balanced every participant's location, commute limit, "
+            f"shared availability, vibe, and venue preferences. Shared time: {time_label}. "
+            f"Cuisine: {cuisine_label}. Average budget: ${budget:.0f} per person."
+        )
 
     return {
         "status": "ok",
@@ -848,66 +1630,166 @@ def _compute_room_recommendations(room_id: str) -> Dict[str, Any]:
         "center": center,
         "transport": transport,
         "shared_slots": overlap_slots,
-        "recommendation_meta": recommendation_meta,
-        "recommendations": scored[:5],
+        "recommendation_meta": {
+            "area_mode": area_mode,
+            "participant_count": n,
+            "open_status_stats": open_status_stats,
+            "shared_slots": overlap_slots,
+            "meeting_mode": _meeting_mode_label(business_context, shopping_context),
+        },
+        "recommendation_text": recommendation_text,
+        "recommendations": candidates[:5],
     }
 
 
 def _compute_direct_recommendations() -> Dict[str, Any]:
+    # 合并饮食禁忌
+    def _collect_dietary_restrictions(prefs):
+        restrictions = set(prefs.get("dietary_restrictions", []) or [])
+        custom = prefs.get("dietary_restrictions_custom", "").strip()
+        if custom:
+            for part in re.split(r"[,;，；\s]+", custom):
+                if part:
+                    restrictions.add(part)
+        return {r.lower() for r in restrictions if r}
+
+    # 定义简单的食物关键词映射
+    RESTRICTION_KEYWORDS = {
+        "不吃猪肉": ["猪肉", "pork", "回锅肉", "红烧肉", "叉烧", "腊肉", "bacon", "ham"],
+        "不吃牛肉": ["牛肉", "beef", "牛排", "牛腩", "brisket", "steak"],
+        "清真": ["猪肉", "pork", "酒精", "alcohol", "ham", "bacon"],
+        "犹太洁食": ["猪肉", "pork", "贝类", "shellfish", "虾", "蟹", "lobster", "bacon", "ham"],
+        "素食": ["肉", "鸡", "牛", "猪", "羊", "鱼", "虾", "蟹", "beef", "pork", "chicken", "lamb", "fish", "shrimp", "crab"],
+        "纯素": ["蛋", "奶", "cheese", "milk", "butter", "yogurt"] + ["肉", "鸡", "牛", "猪", "羊", "鱼", "虾", "蟹", "beef", "pork", "chicken", "lamb", "fish", "shrimp", "crab"],
+        "无海鲜": ["鱼", "虾", "蟹", "贝", "海鲜", "seafood", "fish", "shrimp", "crab", "lobster", "clam", "oyster"],
+        "无坚果": ["坚果", "花生", "核桃", "杏仁", "腰果", "nut", "peanut", "walnut", "almond", "cashew"],
+    }
+
+    def _is_venue_violating_restriction(venue, restrictions):
+        # 检查餐厅名、类型、菜系等是否包含禁忌关键词
+        text = (getattr(venue, "name", "") or "") + " " + (getattr(venue, "place_name", "") or "")
+        text = text.lower()
+        for r in restrictions:
+            for key, keywords in RESTRICTION_KEYWORDS.items():
+                if r in key or key in r:
+                    for kw in keywords:
+                        if kw in text:
+                            return True
+            # 直接用自定义禁忌词模糊匹配
+            if r and r in text:
+                return True
+        return False
+
     summary = _build_direct_summary()
     if not (summary["both_preferences_ready"] and summary["both_locations_ready"] and summary["weighted_center"]):
         return {"status": "incomplete", "summary": summary}
 
     prefs_a = summary["prefs_a"]
     prefs_b = summary["prefs_b"]
+    business_context = _is_business_context_from_prefs([prefs_a, prefs_b])
+    shopping_context = _is_shopping_context_from_prefs([prefs_a, prefs_b])
     loc_a = Location(float(summary["loc_a"]["lat"]), float(summary["loc_a"]["lon"]))
     loc_b = Location(float(summary["loc_b"]["lat"]), float(summary["loc_b"]["lon"]))
     center = Location(float(summary["weighted_center"]["lat"]), float(summary["weighted_center"]["lon"]))
 
+    restrictions_a = _collect_dietary_restrictions(prefs_a)
+    restrictions_b = _collect_dietary_restrictions(prefs_b)
+    all_restrictions = restrictions_a.union(restrictions_b)
+
     transport = _preferred_engine_transport(prefs_a.get("travel_mode"), prefs_b.get("travel_mode"))
+    openai_key, model_name, openai_base = _load_llm_settings()
     engine = MeetHalfwayRecommender(
         mapbox_token=os.getenv("MAPBOX_ACCESS_TOKEN", "").strip(),
         ors_api_key=os.getenv("OPENROUTESERVICE_API_KEY", "").strip() or None,
         yelp_api_key=os.getenv("YELP_API_KEY", "").strip() or None,
         tavily_key=os.getenv("TAVILY_API_KEY", "").strip(),
-        openai_key=os.getenv("OPENAI_API_KEY", "").strip() or None,
-        openai_model=os.getenv("MODEL_NAME", "llama-3.3-70b-versatile").strip(),
-        openai_base=os.getenv("OPENAI_API_BASE", "").strip() or None,
+        openai_key=openai_key,
+        openai_model=model_name,
+        openai_base=openai_base,
         transport=transport,
         isochrone_minutes=20,
         use_yelp=True,
-        use_llm_extraction=False,
-        use_llm_summary=False,
+        use_llm_extraction=bool(openai_key),
+        use_llm_summary=bool(openai_key),
         low_cost_mode=True,
     )
 
-    radius_a_km = max(1.0, float(prefs_a.get("distance_miles", 15)) * 1.60934)
-    radius_b_km = max(1.0, float(prefs_b.get("distance_miles", 15)) * 1.60934)
-    search_area = engine.get_search_area_from_radii(loc_a, loc_b, radius_a_km, radius_b_km)
+    area_resolution = _resolve_search_area_with_radius_negotiation(engine, loc_a, loc_b, prefs_a, prefs_b)
+    search_area = area_resolution["search_area"]
+    radius_negotiation = area_resolution["detail"]
+    if radius_negotiation.get("too_far"):
+        return {
+            "status": "too_far_for_recommendation",
+            "summary": summary,
+            "recommendation_meta": _build_recommendation_meta(
+                str(search_area.get("mode") or "unknown"),
+                [],
+                prefs_a,
+                prefs_b,
+                radius_negotiation=radius_negotiation,
+            ),
+        }
     intersection = search_area.get("geometry")
     area_mode = str(search_area.get("mode") or "unknown")
 
-    cuisines = [str(prefs_a.get("cuisine", "")).strip(), str(prefs_b.get("cuisine", "")).strip()]
-    cuisine_keyword = next((c for c in cuisines if c), "")
+    cuisine_plan = _build_cuisine_keyword_plan(prefs_a, prefs_b)
     venue_types = _combine_venue_preferences(prefs_a, prefs_b)
     search_limit = 8
     dedupe: Dict[Tuple[str, float, float], Any] = {}
     for venue_type in venue_types[:3]:
-        keyword = cuisine_keyword if venue_type == "restaurant" else ""
-        found = engine.search_nearby_venues(center, venue_type=venue_type, keyword=keyword, limit=search_limit, intersection=intersection)
+        found = _search_with_cuisine_fallback(
+            engine,
+            center,
+            venue_type,
+            search_limit,
+            intersection,
+            cuisine_plan,
+        )
         for item in found:
             dedupe[(item.name.lower(), round(item.lat, 4), round(item.lon, 4))] = item
 
     candidates = list(dedupe.values())
+    # 饮食禁忌过滤
+    if all_restrictions:
+        filtered_candidates = [c for c in candidates if not _is_venue_violating_restriction(c, all_restrictions)]
+        if filtered_candidates:
+            candidates = filtered_candidates
+        # else: 保留原始候选但提示
     if not candidates:
-        return {"status": "no_candidates", "summary": summary}
+        return {"status": "no_candidates", "summary": summary, "dietary_filtered": True}
 
     engine.tag_with_isochrone(candidates, intersection, area_mode=area_mode)
-    overlap_slots = _compute_shared_time_overlap(prefs_a.get("availability_slots", []), prefs_b.get("availability_slots", []))
+    slots_a = list(prefs_a.get("availability_slots", []) or [])
+    slots_b = list(prefs_b.get("availability_slots", []) or [])
+    if not slots_a or not slots_b:
+        return {
+            "status": "missing_time_selection",
+            "summary": summary,
+            "recommendation_meta": _build_recommendation_meta(
+                area_mode,
+                [],
+                prefs_a,
+                prefs_b,
+                radius_negotiation=radius_negotiation,
+                meeting_time_alignment=_analyze_meeting_time_alignment(prefs_a, prefs_b, []),
+            ),
+        }
+    time_negotiation = _analyze_time_conflict(slots_a, slots_b)
+    overlap_slots = _compute_shared_time_overlap(slots_a, slots_b)
+    meeting_time_alignment = _analyze_meeting_time_alignment(prefs_a, prefs_b, overlap_slots)
     time_conflict = not bool(overlap_slots)
-    selected_slots = overlap_slots or ["18:00", "18:30", "19:00"]
+    selected_slots = overlap_slots or _build_negotiation_time_slots(slots_a, slots_b)
     time_label = _format_time_slot_label(selected_slots[0]) if overlap_slots else "Flexible"
-    recommendation_meta = _build_recommendation_meta(area_mode, overlap_slots, prefs_a, prefs_b)
+    recommendation_meta = _build_recommendation_meta(
+        area_mode,
+        overlap_slots,
+        prefs_a,
+        prefs_b,
+        open_status_stats,
+        radius_negotiation=radius_negotiation,
+        time_negotiation=time_negotiation,
+        meeting_time_alignment=meeting_time_alignment,
+    )
 
     try:
         asyncio.run(engine.enrich_all_async(candidates, city_hint="", year_hint=2026, time_slot=time_label, party_size=2))
@@ -915,7 +1797,16 @@ def _compute_direct_recommendations() -> Dict[str, Any]:
         pass
 
     candidates, open_status_stats = engine.filter_closed_candidates(candidates)
-    recommendation_meta = _build_recommendation_meta(area_mode, overlap_slots, prefs_a, prefs_b, open_status_stats)
+    recommendation_meta = _build_recommendation_meta(
+        area_mode,
+        overlap_slots,
+        prefs_a,
+        prefs_b,
+        open_status_stats,
+        radius_negotiation=radius_negotiation,
+        time_negotiation=time_negotiation,
+        meeting_time_alignment=meeting_time_alignment,
+    )
     if not candidates:
         return {
             "status": "no_open_candidates",
@@ -933,8 +1824,8 @@ def _compute_direct_recommendations() -> Dict[str, Any]:
         w_pref=0.21,
         time_slots=selected_slots,
         availability={
-            "a": prefs_a.get("availability_slots", []),
-            "b": prefs_b.get("availability_slots", []),
+            "a": slots_a,
+            "b": slots_b,
         },
         radius_tolerance={
             "a": _distance_miles_to_minutes(prefs_a.get("distance_miles", 15), prefs_a.get("travel_mode")),
@@ -943,6 +1834,34 @@ def _compute_direct_recommendations() -> Dict[str, Any]:
         time_conflict=time_conflict,
     )
     scored = _apply_ambiance_preference(scored, prefs_a.get("ambiance_preference", "balanced"), prefs_b.get("ambiance_preference", "balanced"))
+    _attach_parking_recommendations(scored[:10] if business_context else scored[:5], engine)
+    scored = _apply_business_meeting_fit(scored, business_context)
+    budget, cuisine_label, primary_venue_type = _summarize_preference_context(prefs_a, prefs_b)
+    if business_context:
+        recommendation_text = (
+            "Business meeting shortlist: prioritized quiet professional settings, commute fairness, "
+            f"arrival reliability, and nearby parking. Shared time: {time_label}. "
+            f"Average budget: ${budget:.0f} per person."
+        )
+    elif shopping_context:
+        shopping_goal = cuisine_label if cuisine_label != "flexible" else "shopping"
+        recommendation_text = (
+            "Shopping shortlist: prioritized malls, clothing stores, and department stores near the fair meeting area. "
+            f"Shopping goal: {shopping_goal}. Shared time: {time_label}. Parking options are included when available."
+        )
+    else:
+        recommendation_text = engine.generate_recommendation_text(
+            loc_a,
+            loc_b,
+            center,
+            scored[:5],
+            budget=budget,
+            cuisine=cuisine_label,
+            time_slot=time_label,
+            party_size=2,
+            venue_type=primary_venue_type,
+        )
+    recommendation_meta["meeting_mode"] = _meeting_mode_label(business_context, shopping_context)
 
     return {
         "status": "ok",
@@ -951,6 +1870,7 @@ def _compute_direct_recommendations() -> Dict[str, Any]:
         "transport": transport,
         "shared_slots": overlap_slots,
         "recommendation_meta": recommendation_meta,
+        "recommendation_text": recommendation_text,
         "recommendations": scored[:5],
     }
 
@@ -959,7 +1879,41 @@ def _compute_direct_recommendations() -> Dict[str, Any]:
 # Candidate serialisation & UI helpers (used by check_result + vote pages)
 # ============================================================================
 
-_AMBIANCE_LABEL = {"quiet": "quiet & calm", "balanced": "balanced atmosphere", "lively": "lively & busy"}
+_AMBIANCE_LABEL = {"quiet": "安静舒缓", "balanced": "氛围均衡", "lively": "热闹活跃"}
+
+
+def _attach_parking_recommendations(
+    candidates: list,
+    engine: MeetHalfwayRecommender,
+    limit_per_venue: int = 3,
+) -> list:
+    """Attach nearby destination parking options to each venue candidate."""
+    for candidate in candidates:
+        parking_options: list[Dict[str, Any]] = []
+        try:
+            venue_loc = Location(float(candidate.lat), float(candidate.lon))
+            parking_lots = engine.search_nearby_venues(
+                center=venue_loc,
+                venue_type="parking",
+                keyword="",
+                limit=max(1, int(limit_per_venue)),
+                intersection=None,
+            )
+            for parking in parking_lots[:limit_per_venue]:
+                distance_km = engine.haversine_km(venue_loc, Location(float(parking.lat), float(parking.lon)))
+                parking_options.append(
+                    {
+                        "name": parking.name,
+                        "lat": float(parking.lat),
+                        "lon": float(parking.lon),
+                        "distance_m": int(distance_km * 1000),
+                        "maps_url": f"https://www.google.com/maps/search/?api=1&query={float(parking.lat)},{float(parking.lon)}",
+                    }
+                )
+        except Exception:
+            parking_options = []
+        candidate.parking_recommendations = parking_options
+    return candidates
 
 
 def _build_recommendation_reason(c: Any, summary: Dict[str, Any]) -> str:
@@ -972,42 +1926,53 @@ def _build_recommendation_reason(c: Any, summary: Dict[str, Any]) -> str:
     in_iso = getattr(c, "in_isochrone_intersection", False)
     search_area_mode = getattr(c, "search_area_mode", "intersection")
     time_conflict = bool(getattr(c, "time_conflict", False))
+    closest_gap = float(getattr(c, "closest_time_gap_minutes", 0.0) or 0.0)
+    severe_time_gap = bool(getattr(c, "severe_time_gap", False))
 
     if fairness < 3:
-        parts.append("almost equal travel time for both people")
+        parts.append("双方通勤时间几乎一致")
     elif fairness < 8:
-        parts.append(f"travel-time difference only ~{fairness:.0f} min")
+        parts.append(f"双方通勤时间差约 {fairness:.0f} 分钟")
 
     if in_iso:
-        parts.append("within the reachable zone for both")
+        parts.append("位于双方都能接受的可达区域内")
     elif search_area_mode == "union_fallback":
-        parts.append("picked from the combined reachable area because the two radius zones do not overlap")
+        parts.append("由于双方通勤范围没有重叠，因此从合并可达区域中选出")
 
     if rating >= 0.75:
-        parts.append(f"high rating proxy ({rating:.2f})")
+        parts.append(f"综合口碑较高（{rating:.2f}）")
     elif rating >= 0.55:
-        parts.append(f"solid rating ({rating:.2f})")
+        parts.append(f"综合口碑稳定（{rating:.2f}）")
 
     if time_conflict:
-        parts.append("no shared time overlap detected yet")
+        parts.append("目前还没有共同可用时段")
+        if severe_time_gap and closest_gap > 0:
+            parts.append(f"最接近的可约时间仍相差约 {closest_gap:.0f} 分钟")
     elif best_time:
-        parts.append(f"best time: {best_time}")
+        parts.append(f"建议到店时间：{best_time}")
 
     ambiance_fit = float(bd.get("ambiance_fit", 0))
     pref_a = summary.get("prefs_a", {}).get("ambiance_preference", "balanced")
     pref_b = summary.get("prefs_b", {}).get("ambiance_preference", "balanced")
     if ambiance_fit >= 0.75:
-        parts.append(f"matches preferred ambiance ({_AMBIANCE_LABEL.get(pref_a, pref_a)} / {_AMBIANCE_LABEL.get(pref_b, pref_b)})")
+        parts.append(f"氛围贴合双方偏好（{_AMBIANCE_LABEL.get(pref_a, pref_a)} / {_AMBIANCE_LABEL.get(pref_b, pref_b)}）")
+
+    business_fit = float(bd.get("business_fit", 0))
+    if business_fit >= 0.65:
+        parts.append("适合商务会谈：环境更安静、场所更中立，并考虑到停车/到达便利")
+
+    if getattr(c, "venue_category", "") in {"mall", "clothing", "department_store"}:
+        parts.append("适合购物/逛商场场景，可作为非吃饭目的地")
 
     web_title = (getattr(c, "web_signals", {}) or {}).get("title", "")
     if web_title and len(web_title) < 80:
-        parts.append(f'web: "{web_title}"')
+        parts.append(f'网页线索："{web_title}"')
 
     venue_status = str((getattr(c, "web_signals", {}) or {}).get("status", "uncertain")).lower()
     if venue_status == "uncertain":
-        parts.append("opening hours not fully confirmed")
+        parts.append("营业状态仍需二次确认")
 
-    return "; ".join(parts) if parts else "strong overall score from AI algorithm"
+    return "；".join(parts) if parts else "综合评分表现较强"
 
 
 def _serialise_candidates_for_vote(
@@ -1029,20 +1994,41 @@ def _serialise_candidates_for_vote(
             "rating_proxy": round(float(c.rating_proxy), 3),
             "crowd_index": round(float(ws.get("crowd_index", 0.5)), 3),
             "best_time_slot": getattr(c, "best_time_slot", "") or "",
+            "closest_time_gap_minutes": round(float(getattr(c, "closest_time_gap_minutes", 0.0) or 0.0), 2),
+            "severe_time_gap": bool(getattr(c, "severe_time_gap", False)),
             "in_isochrone_intersection": bool(getattr(c, "in_isochrone_intersection", False)),
             "search_area_mode": getattr(c, "search_area_mode", "intersection"),
             "time_conflict": bool(getattr(c, "time_conflict", False)),
             "venue_status": str(ws.get("status", "uncertain")),
             "score_breakdown": {k: round(float(v), 4) for k, v in bd.items()},
             "web_title": ws.get("title", ""),
+            "parking_recommendations": list(getattr(c, "parking_recommendations", []) or []),
             "recommendation_reason": _build_recommendation_reason(c, summary),
         })
     return result
 
 
+def _render_saved_parking_options(candidate: Dict[str, Any]) -> None:
+    parking = list(candidate.get("parking_recommendations", []) or [])
+    if not parking:
+        st.caption("Nearby parking: no parking lots found nearby yet.")
+        return
+    st.markdown("**Nearby parking:**")
+    for option in parking[:3]:
+        name = html.escape(str(option.get("name", "Parking")))
+        maps_url = html.escape(str(option.get("maps_url", "")))
+        distance_m = int(option.get("distance_m", 0) or 0)
+        if maps_url:
+            st.markdown(f"- <a href='{maps_url}' target='_blank'>{name}</a> ({distance_m} m)", unsafe_allow_html=True)
+        else:
+            st.caption(f"- {name} ({distance_m} m)")
+
+
 def _render_candidate_cards(candidates: list[Dict[str, Any]]) -> None:
     """Render venue candidate cards in the UI."""
     medals = ["#1", "#2", "#3"]
+    from meethalfway import MeetHalfwayRecommender, Location
+    import os
     for idx, c in enumerate(candidates):
         medal = medals[idx] if idx < len(medals) else f"#{idx+1}"
         with st.container():
@@ -1058,41 +2044,99 @@ def _render_candidate_cards(candidates: list[Dict[str, Any]]) -> None:
                 unsafe_allow_html=True,
             )
             cols = st.columns(4)
-            cols[0].metric("AI Score", f"{float(c.get('final_score', 0)):.2f}")
-            cols[1].metric("Fairness gap", f"{float(c.get('fairness_delta_minutes', 0)):.1f} min")
-            cols[2].metric("Rating proxy", f"{float(c.get('rating_proxy', 0)):.2f}")
-            cols[3].metric("Crowd index", f"{float(c.get('crowd_index', 0.5)):.2f}")
+            cols[0].metric("AI 评分", f"{float(c.get('final_score', 0)):.2f}")
+            cols[1].metric("公平性差值", f"{float(c.get('fairness_delta_minutes', 0)):.1f} 分钟")
+            cols[2].metric("口碑代理分", f"{float(c.get('rating_proxy', 0)):.2f}")
+            cols[3].metric("拥挤指数", f"{float(c.get('crowd_index', 0.5)):.2f}")
             status_label = str(c.get("venue_status", "uncertain")).lower()
-            st.caption(f"Opening status check: {status_label}")
+            st.caption(f"营业状态检查：{status_label}")
             reason = c.get("recommendation_reason", "")
             if reason:
-                st.caption(f"Why recommended: {reason}")
+                st.caption(f"推荐理由：{reason}")
             if c.get("time_conflict"):
-                st.caption("Best visit time: no shared time available yet")
+                st.caption("建议到店时间：目前还没有共同可用时段")
+                if c.get("severe_time_gap"):
+                    st.caption(
+                        f"时间提醒：双方最接近的可约时间仍相差约 {float(c.get('closest_time_gap_minutes', 0)):.0f} 分钟，建议手动协商。"
+                    )
             elif c.get("best_time_slot"):
-                st.caption(f"Best visit time: {c['best_time_slot']}")
+                st.caption(f"建议到店时间：{c['best_time_slot']}")
             if c.get("search_area_mode") == "union_fallback":
-                st.caption("Reachability note: this venue was selected from the combined radius area because the two commute ranges do not overlap.")
+                st.caption("可达性说明：由于双方通勤范围没有重叠，这个地点来自合并可达区域。")
             bd = c.get("score_breakdown", {})
             if bd:
                 st.caption(
-                    "Score breakdown: "
-                    f"distance {bd.get('distance', bd.get('dist', 0)):.2f}  "
-                    f"| rating {bd.get('rating', 0):.2f}  "
-                    f"| availability {bd.get('availability_overlap', 0):.2f}  "
-                    f"| ambiance {bd.get('ambiance_fit', 0):.2f}"
+                    "评分拆解："
+                    f"距离 {bd.get('distance', bd.get('dist', 0)):.2f}  "
+                    f"| 口碑 {bd.get('rating', 0):.2f}  "
+                    f"| 时间重叠 {bd.get('availability_overlap', 0):.2f}  "
+                    f"| 氛围匹配 {bd.get('ambiance_fit', 0):.2f}"
                 )
+
+            # --- Nearby Parking Lots ---
+            if c.get("parking_recommendations"):
+                _render_saved_parking_options(c)
+                continue
+            try:
+                # Only run if lat/lon present
+                lat = c.get("lat")
+                lon = c.get("lon")
+                if lat is not None and lon is not None:
+                    st.markdown("<div style='margin-top:8px;'><b>🚗 Nearby Parking:</b></div>", unsafe_allow_html=True)
+                    # Use a small radius for parking search
+                    mapbox_token = os.getenv("MAPBOX_ACCESS_TOKEN", "").strip()
+                    ors_key = os.getenv("OPENROUTESERVICE_API_KEY", "").strip() or None
+                    yelp_key = os.getenv("YELP_API_KEY", "").strip() or None
+                    tavily_key = os.getenv("TAVILY_API_KEY", "").strip()
+                    openai_key = os.getenv("OPENAI_API_KEY", "").strip() or None
+                    model_name = os.getenv("MODEL_NAME", os.getenv("OPENAI_MODEL", "gpt-4o-mini")).strip()
+                    openai_base = os.getenv("OPENAI_API_BASE", "").strip() or None
+                    engine = MeetHalfwayRecommender(
+                        mapbox_token=mapbox_token,
+                        ors_api_key=ors_key,
+                        yelp_api_key=yelp_key,
+                        tavily_key=tavily_key,
+                        openai_key=openai_key,
+                        openai_model=model_name,
+                        openai_base=openai_base,
+                        transport="drive",
+                        low_cost_mode=True,
+                        use_yelp=False,
+                        use_llm_extraction=False,
+                        use_llm_summary=False,
+                        max_enriched_candidates=0,
+                    )
+                    venue_loc = Location(float(lat), float(lon))
+                    # Search for parking lots within 400m (approx 0.25 miles)
+                    parking_lots = engine.search_nearby_venues(
+                        center=venue_loc,
+                        venue_type="parking",
+                        keyword="",
+                        limit=4,
+                        intersection=None,
+                    )
+                    if parking_lots:
+                        for p in parking_lots:
+                            dist_km = engine.haversine_km(venue_loc, Location(p.lat, p.lon))
+                            dist_m = int(dist_km * 1000)
+                            maps_url = f"https://www.google.com/maps/search/?api=1&query={p.lat},{p.lon}"
+                            st.markdown(f"- <a href='{maps_url}' target='_blank'>{p.name}</a> ({dist_m} m)", unsafe_allow_html=True)
+                    else:
+                        st.caption("No parking lots found nearby.")
+            except Exception as e:
+                st.caption(f"[Parking search error: {e}]")
 
 
 def _render_vote_button(room_id: str) -> None:
     """Show 'Go Vote' button and voting status."""
-    vote_a = _load_vote(room_id, "A")
-    vote_b = _load_vote(room_id, "B")
+    summary = _preference_summary(room_id)
+    keys = summary.get("keys", ["P1", "P2"])
+    votes = {key: _load_vote(room_id, key) for key in keys}
     st.divider()
-    c1, c2 = st.columns(2)
-    c1.metric("Person A ranking", "Submitted" if vote_a else "Not yet")
-    c2.metric("Person B ranking", "Submitted" if vote_b else "Not yet")
-    if vote_a and vote_b:
+    cols = st.columns(len(keys))
+    for col, key in zip(cols, keys):
+        col.metric(_role_label(key), "Submitted" if votes[key] else "Not yet")
+    if all(votes.values()):
         if st.button("See Final Results", type="primary", use_container_width=True, key="goto_final"):
             st.session_state.current_page = "final_result"
             st.rerun()
@@ -1579,13 +2623,25 @@ def _safe_clipboard_copy(text: str, key: str) -> bool:
 def _get_app_base_url() -> str:
     """Best-effort public base URL for invite links."""
     browser_url = streamlit_js_eval(
-        js_expressions="window.location.href",
+        js_expressions="""
+        (() => {
+            try {
+                if (window.top && window.top.location && window.top.location.origin) {
+                    return window.top.location.origin;
+                }
+            } catch (e) {}
+            if (window.location && window.location.origin) {
+                return window.location.origin;
+            }
+            return window.location.href;
+        })()
+        """,
         key="detect_app_base_url",
     )
     if isinstance(browser_url, str) and browser_url.strip():
         parsed = urlparse(browser_url)
         if parsed.scheme and parsed.netloc:
-            base_url = f"{parsed.scheme}://{parsed.netloc}{parsed.path}".rstrip("/")
+            base_url = f"{parsed.scheme}://{parsed.netloc}"
             st.session_state["detected_app_base_url"] = base_url
             return base_url
 
@@ -1597,7 +2653,7 @@ def _get_app_base_url() -> str:
     if configured:
         return configured.rstrip("/")
 
-    default_port = 8501
+    default_port = 8502
     try:
         if STREAMLIT_CONFIG_PATH.exists():
             config_data = tomllib.loads(STREAMLIT_CONFIG_PATH.read_text(encoding="utf-8"))
@@ -2295,6 +3351,14 @@ def render_generate_link_page():
         st.subheader("Step 1: Enter Your Information")
         st.caption("Create your own Room ID or leave blank and we will generate automatically")
         room_id = st.text_input("Room ID", value=st.session_state.room_id, placeholder="Enter custom ID or leave empty")
+        participant_count = st.number_input(
+            "How many people are joining?",
+            min_value=2,
+            max_value=MAX_PARTICIPANTS,
+            value=int(st.session_state.get("participant_count", 2) or 2),
+            step=1,
+        )
+        st.session_state.participant_count = int(participant_count)
         your_name = st.text_input("Your Name")
 
         st.markdown('<label>Your Email <span style="color: #999; font-size: 0.85em;">(optional)</span></label>', unsafe_allow_html=True)
@@ -2316,9 +3380,10 @@ def render_generate_link_page():
             st.session_state.generated_room_id = final_room_id
             st.session_state.generated_link = final_link
             st.session_state.room_id = final_room_id
-            st.session_state.user_role = "Person A"
+            st.session_state.user_role = "Person 1"
             st.session_state.creator_name = your_name
             st.session_state.user_name = your_name
+            _set_room_participant_count(final_room_id, int(participant_count))
 
         if st.session_state.link_generated:
             st.success("✅ Link Generated!")
@@ -2328,7 +3393,7 @@ def render_generate_link_page():
             st.code(st.session_state.generated_room_id, language="text")
 
 
-            st.info(f"Share this link or Room ID **{st.session_state.generated_room_id}** with your partner to start!")
+            st.info(f"Share this link or Room ID **{st.session_state.generated_room_id}** with the other {int(st.session_state.participant_count) - 1} participant(s) to start!")
             if "localhost" in st.session_state.generated_link or "127.0.0.1" in st.session_state.generated_link:
                 st.warning("This invite currently points to a local-only address. For another device to open it, run the app on a LAN/public URL first or set PUBLIC_APP_URL in your environment.")
 
@@ -2376,14 +3441,14 @@ def render_join_link_page():
 
         with col2:
             st.subheader("Your Role")
-            st.success("**Your Role: Person A** (as the creator)")
+            st.success("**Your Role: Person 1** (as the creator)")
 
             st.markdown("---")
-            st.caption("You are the meeting creator. Your partner will join as Person B and fill in their own details.")
+            st.caption("You are the meeting creator. Other participants will join as Person 2 through Person 5 as needed.")
 
         # Save to session state for next steps
         st.session_state.room_id = st.session_state.generated_room_id
-        st.session_state.user_role = "Person A"
+        st.session_state.user_role = "Person 1"
         st.session_state.user_name = your_name
 
     elif room_from_url:
@@ -2397,11 +3462,16 @@ def render_join_link_page():
             st.info(f"**Room ID:** {room_from_url}")
             st.caption("You're joining via a room invitation link")
 
-            default_role = st.session_state.get("room_link_role", "Person B")
+            room_summary = _preference_summary(room_from_url)
+            participant_count = int(room_summary.get("participant_count", 2) or 2)
+            options = _role_options(participant_count)
+            default_role = st.session_state.get("room_link_role", "Person 2")
+            if default_role not in options:
+                default_role = options[min(1, len(options) - 1)]
             selected_role = st.selectbox(
                 "I am joining as",
-                ["Person A", "Person B"],
-                index=0 if default_role == "Person A" else 1,
+                options,
+                index=options.index(default_role),
                 key="room_link_role",
             )
             role_key = _normalize_user_role(selected_role)
@@ -2430,10 +3500,10 @@ def render_join_link_page():
 
             st.subheader("Your Role")
             st.success(f"**Your Role: {selected_role}**")
-            if role_key == "A":
-                st.caption("Use this if you're reopening the room as the creator or continuing Person A's side.")
+            if role_key == "P1":
+                st.caption("Use this if you're reopening the room as the creator or continuing Person 1's side.")
             else:
-                st.caption("Use this if you're joining or continuing Person B's side.")
+                st.caption(f"Use this if you're joining or continuing {selected_role}'s side.")
 
             if saved_name or saved_location or saved_preferences:
                 status_bits = []
@@ -2483,7 +3553,9 @@ def render_join_link_page():
                 link = st.text_input("Enter Full Link", placeholder="https://your-app-url/?room=...")
                 room_id = _extract_room_id(link)
 
-            your_role = st.selectbox("Your Role", ["Person A", "Person B"])
+            existing_summary = _preference_summary(room_id) if room_id else {"participant_count": st.session_state.get("participant_count", 2)}
+            participant_count = int(existing_summary.get("participant_count", 2) or 2)
+            your_role = st.selectbox("Your Role", _role_options(participant_count))
             role_key = _normalize_user_role(your_role)
             saved_name = _load_saved_profile_name(room_id, role_key) if room_id else ""
             saved_location = _load_saved_location(room_id, role_key) if room_id else None
@@ -2558,8 +3630,9 @@ def render_check_result_page():
             rec_cached = _load_room_recommendation(room_id)
             st.info(f"Results for room: **{room_id}**")
 
-            st.metric("Preferences Submitted", int(bool(summary["prefs_a"])) + int(bool(summary["prefs_b"])))
-            st.metric("Locations Confirmed", int(bool(summary["loc_a"])) + int(bool(summary["loc_b"])))
+            total_people = int(summary.get("participant_count", 2) or 2)
+            st.metric("Preferences Submitted", f"{summary.get('preferences_ready_count', 0)}/{total_people}")
+            st.metric("Locations Confirmed", f"{summary.get('locations_ready_count', 0)}/{total_people}")
             st.metric("Weighted Center Ready", "Yes" if summary["weighted_center"] else "Not yet")
             st.metric("Recommendation", "Ready" if rec_cached and rec_cached.get("status") == "ready" else "Pending")
         else:
@@ -2570,16 +3643,17 @@ def render_check_result_page():
         st.caption("Privacy mode: personal details are hidden on this page. Only room-level readiness is shown.")
 
         if summary["weighted_center"]:
-            st.success("Both sides are ready. The shared center has been computed and recommendation generation can proceed.")
+            st.success("Everyone is ready. The shared center has been computed and recommendation generation can proceed.")
         else:
-            st.warning("Waiting for both sides to submit location and preferences before recommendations can be generated.")
+            st.warning("Waiting for all participants to submit location and preferences before recommendations can be generated.")
 
         rec_cached = _load_room_recommendation(room_id)
         recommendation_state = _compute_room_recommendations(room_id)
-        if rec_cached and rec_cached.get("status") == "ready" and rec_cached.get("candidates"):
+        if rec_cached and rec_cached.get("status") == "ready" and rec_cached.get("candidates") and rec_cached.get("recommendation_text"):
             # Already have a vote-ready candidate list saved
             st.markdown("### Recommended Venues")
             _render_recommendation_warnings(rec_cached.get("recommendation_meta", {}))
+            _render_recommendation_summary(rec_cached.get("recommendation_text", ""))
             _render_candidate_cards(rec_cached["candidates"])
             _render_vote_button(room_id)
         elif recommendation_state["status"] == "ok":
@@ -2588,20 +3662,25 @@ def render_check_result_page():
             # Serialise to dicts and generate reasons, save for vote page
             candidate_dicts = _serialise_candidates_for_vote(scored, recommendation_state.get("summary", {}))
             _render_recommendation_warnings(recommendation_state.get("recommendation_meta", {}))
+            _render_recommendation_summary(recommendation_state.get("recommendation_text", ""))
             _save_room_recommendation(room_id, {
                 "status": "ready",
                 "generated_at": _utc_timestamp(),
                 "room_id": room_id,
                 "candidates": candidate_dicts,
                 "recommendation_meta": recommendation_state.get("recommendation_meta", {}),
+                "recommendation_text": recommendation_state.get("recommendation_text", ""),
             })
             _render_candidate_cards(candidate_dicts)
             _render_vote_button(room_id)
         elif recommendation_state["status"] == "no_candidates":
-            st.error("Both people are ready, but no venue candidates were found in the shared area yet.")
+            st.error("Everyone is ready, but no venue candidates were found in the shared area yet.")
         elif recommendation_state["status"] == "no_open_candidates":
             _render_recommendation_warnings(recommendation_state.get("recommendation_meta", {}))
             st.error("We found places nearby, but none could be safely kept as open for the selected time. Please adjust the time and try again.")
+        elif recommendation_state["status"] == "too_far_for_recommendation":
+            _render_recommendation_warnings(recommendation_state.get("recommendation_meta", {}))
+            st.error("These two locations are too far apart for a fair shared recommendation under the current commute settings.")
         elif rec_cached and rec_cached.get("status") == "failed":
             st.warning(rec_cached.get("message", "Recommendation could not be generated yet."))
     
@@ -2626,18 +3705,51 @@ def render_dual_preferences_page():
         defaults = saved.get(role_key, {}) or {}
         loc = loc_a if role_key == "A" else loc_b
         st.subheader(f"Person {role_key}")
+        default_meeting_type = str(defaults.get("meeting_type", "Dinner Date") or "Dinner Date")
+        if default_meeting_type not in DIRECT_MEETING_TYPE_OPTIONS:
+            default_meeting_type = "Dinner Date"
         meeting_type = st.selectbox(
             f"Meeting type - Person {role_key}",
-            options=["Dinner Date", "Coffee Chat", "Casual Hangout", "Business Meeting"],
-            index=["Dinner Date", "Coffee Chat", "Casual Hangout", "Business Meeting"].index(defaults.get("meeting_type", "Dinner Date")),
+            options=DIRECT_MEETING_TYPE_OPTIONS,
+            index=DIRECT_MEETING_TYPE_OPTIONS.index(default_meeting_type),
             key=f"direct_meeting_type_{role_key}",
         )
+        if _is_business_meeting_type(meeting_type):
+            st.caption("Business mode will favor quiet professional venues, easy arrival, and nearby parking.")
+        elif _is_shopping_meeting_type(meeting_type):
+            st.caption("Shopping mode can find malls, clothing stores, or department stores near the fair meeting area.")
         cuisine = st.text_input(
-            f"Cuisine or food style - Person {role_key}",
+            f"Food preference or shopping goal - Person {role_key}",
             value=defaults.get("cuisine", ""),
             key=f"direct_cuisine_{role_key}",
-            placeholder="sushi, korean bbq, brunch, pasta...",
+            placeholder="sushi, brunch, clothes, Nike shoes, suit, Plaza mall...",
         )
+
+        # 新增：饮食禁忌/宗教饮食选项
+        DIETARY_RESTRICTIONS_OPTIONS = [
+            "不吃猪肉 (No Pork)",
+            "不吃牛肉 (No Beef)",
+            "清真 (Halal)",
+            "犹太洁食 (Kosher)",
+            "素食 (Vegetarian)",
+            "纯素 (Vegan)",
+            "无海鲜 (No Seafood)",
+            "无坚果 (No Nuts)",
+        ]
+        dietary_restrictions = st.multiselect(
+            f"饮食禁忌/宗教饮食 - Person {role_key}",
+            options=DIETARY_RESTRICTIONS_OPTIONS,
+            default=defaults.get("dietary_restrictions", []),
+            key=f"direct_dietary_restrictions_{role_key}",
+            help="如有宗教或健康相关饮食禁忌，请选择。"
+        )
+        dietary_restrictions_custom = st.text_input(
+            f"补充其他饮食禁忌（可选） - Person {role_key}",
+            value=defaults.get("dietary_restrictions_custom", ""),
+            key=f"direct_dietary_restrictions_custom_{role_key}",
+            placeholder="如：不吃羊肉、无麸质、忌辣等"
+        )
+
         budget = st.slider(
             f"Budget per person ($) - Person {role_key}",
             min_value=10,
@@ -2691,6 +3803,8 @@ def render_dual_preferences_page():
             "travel_mode": normalize_transport_mode(travel_mode),
             "availability_slots": availability_slots,
             "ambiance_preference": ambiance_preference,
+            "dietary_restrictions": dietary_restrictions,
+            "dietary_restrictions_custom": dietary_restrictions_custom.strip(),
         }
 
     col_a, col_b = st.columns(2)
@@ -2700,6 +3814,16 @@ def render_dual_preferences_page():
         payload_b = _render_pref_block("B")
 
     if st.button("Generate Shared Recommendations", type="primary", use_container_width=True, key="direct_generate_recs"):
+        missing_a = _missing_preference_fields(payload_a.get("venue_type"), payload_a.get("availability_slots"))
+        missing_b = _missing_preference_fields(payload_b.get("venue_type"), payload_b.get("availability_slots"))
+        if missing_a or missing_b:
+            parts = []
+            if missing_a:
+                parts.append("Person A must choose " + " and ".join(missing_a))
+            if missing_b:
+                parts.append("Person B must choose " + " and ".join(missing_b))
+            st.warning(". ".join(parts) + " before generating recommendations.")
+            return
         st.session_state.direct_preferences = {"A": payload_a, "B": payload_b}
         _reset_direct_flow_results()
         st.session_state.direct_recommendation_meta = {}
@@ -2711,6 +3835,7 @@ def render_dual_preferences_page():
                 rec_state.get("summary", {}),
             )
             st.session_state.direct_recommendation_meta = rec_state.get("recommendation_meta", {})
+            st.session_state.direct_recommendation_text = rec_state.get("recommendation_text", "")
             st.session_state.current_page = "venue_vote"
             st.rerun()
         if rec_state.get("status") == "no_open_candidates":
@@ -2718,6 +3843,11 @@ def render_dual_preferences_page():
             st.warning("No venues could be confidently kept open for the selected time. Try changing the time or venue type.")
         elif rec_state.get("status") == "no_candidates":
             st.warning("No matching venues were found in the shared area. Try widening the commute distance or venue types.")
+        elif rec_state.get("status") == "missing_time_selection":
+            st.warning("Each person must choose at least one available time before recommendations can be generated.")
+        elif rec_state.get("status") == "too_far_for_recommendation":
+            _render_recommendation_warnings(rec_state.get("recommendation_meta", {}))
+            st.warning("These two locations are too far apart for a fair shared recommendation under the current commute settings.")
         else:
             st.warning("Both people's preferences and locations are required before recommendations can be generated.")
 
@@ -2740,6 +3870,7 @@ def render_vote_page():
             st.info("Recommendations are not ready yet. Please complete the dual preference form first.")
             return
 
+        _render_recommendation_summary(st.session_state.get("direct_recommendation_text", ""))
         st.subheader("Candidate Venues")
         _render_candidate_cards(candidates)
 
@@ -2801,6 +3932,7 @@ def render_vote_page():
     st.subheader("Candidate Venues")
     st.caption("Review the 5 candidates below, then rank your Top 3 at the bottom of the page.")
     _render_recommendation_warnings(rec.get("recommendation_meta", {}))
+    _render_recommendation_summary(rec.get("recommendation_text", ""))
 
     for idx, c in enumerate(candidates, start=1):
         with st.container():
@@ -2816,28 +3948,32 @@ def render_vote_page():
                 unsafe_allow_html=True,
             )
             cols = st.columns(4)
-            cols[0].metric("Score", f"{float(c.get('final_score', 0)):.2f}")
-            cols[1].metric("Fairness gap", f"{float(c.get('fairness_delta_minutes', 0)):.1f} min")
-            cols[2].metric("Rating proxy", f"{float(c.get('rating_proxy', 0)):.2f}")
-            cols[3].metric("Crowd index", f"{float(c.get('crowd_index', 0.5)):.2f}")
-            st.caption(f"Opening status check: {str(c.get('venue_status', 'uncertain')).lower()}")
+            cols[0].metric("评分", f"{float(c.get('final_score', 0)):.2f}")
+            cols[1].metric("公平性差值", f"{float(c.get('fairness_delta_minutes', 0)):.1f} 分钟")
+            cols[2].metric("口碑代理分", f"{float(c.get('rating_proxy', 0)):.2f}")
+            cols[3].metric("拥挤指数", f"{float(c.get('crowd_index', 0.5)):.2f}")
+            st.caption(f"营业状态检查：{str(c.get('venue_status', 'uncertain')).lower()}")
             reason = c.get("recommendation_reason", "")
             if reason:
-                st.caption(f"Why recommended: {reason}")
+                st.caption(f"推荐理由：{reason}")
             if c.get("time_conflict"):
-                st.caption("Best visit time: no shared time available yet")
+                st.caption("建议到店时间：目前还没有共同可用时段")
+                if c.get("severe_time_gap"):
+                    st.caption(
+                        f"时间提醒：双方最接近的可约时间仍相差约 {float(c.get('closest_time_gap_minutes', 0)):.0f} 分钟，建议手动协商。"
+                    )
             elif c.get("best_time_slot"):
-                st.caption(f"Best visit time: {c['best_time_slot']}")
+                st.caption(f"建议到店时间：{c['best_time_slot']}")
             if c.get("search_area_mode") == "union_fallback":
-                st.caption("Reachability note: this venue was selected from the combined radius area because the two commute ranges do not overlap.")
+                st.caption("可达性说明：由于双方通勤范围没有重叠，这个地点来自合并可达区域。")
             bd = c.get("score_breakdown", {})
             if bd:
                 st.caption(
-                    "Score breakdown: "
-                    f"distance {bd.get('distance', bd.get('dist', 0)):.2f}  "
-                    f"| rating {bd.get('rating', 0):.2f}  "
-                    f"| availability {bd.get('availability_overlap', 0):.2f}  "
-                    f"| ambiance {bd.get('ambiance_fit', 0):.2f}"
+                    "评分拆解："
+                    f"距离 {bd.get('distance', bd.get('dist', 0)):.2f}  "
+                    f"| 口碑 {bd.get('rating', 0):.2f}  "
+                    f"| 时间重叠 {bd.get('availability_overlap', 0):.2f}  "
+                    f"| 氛围匹配 {bd.get('ambiance_fit', 0):.2f}"
                 )
 
     st.divider()
@@ -2875,20 +4011,21 @@ def render_vote_page():
         else:
             _save_vote(room_id, role_key, picks)
             st.success("Your ranking has been saved!")
-            vote_a = _load_vote(room_id, "A")
-            vote_b = _load_vote(room_id, "B")
-            if vote_a and vote_b:
+            summary = _preference_summary(room_id)
+            room_votes = [_load_vote(room_id, key) for key in summary.get("keys", ["P1", "P2"])]
+            if all(room_votes):
                 st.session_state.current_page = "final_result"
                 st.rerun()
 
-    vote_a = _load_vote(room_id, "A")
-    vote_b = _load_vote(room_id, "B")
+    summary = _preference_summary(room_id)
+    keys = summary.get("keys", ["P1", "P2"])
+    votes = {key: _load_vote(room_id, key) for key in keys}
     st.divider()
-    c1, c2 = st.columns(2)
-    c1.metric("Person A ranking", "Submitted" if vote_a else "Waiting")
-    c2.metric("Person B ranking", "Submitted" if vote_b else "Waiting")
+    cols = st.columns(len(keys))
+    for col, key in zip(cols, keys):
+        col.metric(f"{_role_label(key)} ranking", "Submitted" if votes[key] else "Waiting")
 
-    if vote_a and vote_b:
+    if all(votes.values()):
         if st.button("See Final Results", type="primary", use_container_width=True):
             st.session_state.current_page = "final_result"
             st.rerun()
@@ -2899,7 +4036,7 @@ def render_vote_page():
 # ============================================================================
 def render_final_result_page():
     """Show the AI-merged top-3 shortlist that both people can discuss and book from."""
-    st.header("Your Final Shortlist")
+    st.header("最终推荐 shortlist")
 
     room_id = st.session_state.get("room_id", "")
     if st.session_state.get("direct_flow_active") and not room_id:
@@ -2907,29 +4044,47 @@ def render_final_result_page():
         vote_b = _load_direct_vote("B")
         candidates = st.session_state.get("direct_candidates", []) or []
         direct_meta = st.session_state.get("direct_recommendation_meta", {}) or {}
+        medals = ["🥇", "🥈", "🥉"]
         if not (vote_a and vote_b and candidates):
-            st.info("Please complete both rankings first.")
+            st.info("Please complete voting for both users first.")
             return
 
         final_3 = _compute_combined_ranking(vote_a, vote_b)[:3]
         candidates_by_name = {c.get("name", ""): c for c in candidates}
 
-        st.info("These three venues are the merged shortlist from both people's rankings. You can now discuss and choose one together.")
+        st.info("These 3 places are the final shortlist, merged from both users' votes. Discuss together and decide!")
         _render_recommendation_warnings(direct_meta)
+        _render_recommendation_summary(st.session_state.get("direct_recommendation_text", ""))
         for i, name in enumerate(final_3, start=1):
             c = candidates_by_name.get(name, {})
             score_a = (3 - vote_a.index(name)) if name in vote_a else 0
             score_b = (3 - vote_b.index(name)) if name in vote_b else 0
             total_pts = score_a + score_b
-            st.markdown(f"**{i}. {name}**")
-            if c.get("place_name"):
-                st.caption(c.get("place_name"))
-            if c.get("recommendation_reason"):
-                st.caption(f"Why recommended: {c.get('recommendation_reason')}")
-            col1, col2, col3 = st.columns(3)
-            col1.metric("Person A rank", f"#{vote_a.index(name)+1}" if name in vote_a else "-")
-            col2.metric("Person B rank", f"#{vote_b.index(name)+1}" if name in vote_b else "-")
-            col3.metric("Combined score", f"{total_pts} pts")
+            st.markdown(
+                f"""
+                <div style="background:rgba(255,255,255,0.92);border:1.5px solid rgba(70,110,170,0.2);
+                border-radius:20px;padding:20px 24px;margin-bottom:14px;
+                box-shadow:0 8px 28px rgba(40,80,140,0.10);">
+                <span style="font-size:1.6rem;">{medals[i-1]}</span>
+                &nbsp;
+                <span style="font-size:1.25rem;font-weight:800;color:#1a3558;">{name}</span>
+                &nbsp;
+                <span style="float:right;background:#f0f6ff;border-radius:999px;padding:4px 14px;
+                font-size:0.9rem;font-weight:700;color:#2a66cc;">{total_pts} pts</span>
+                <br/>
+                <span style="color:#546a7e;font-size:0.88rem;">{c.get('place_name') or c.get('address','')}</span>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+            reason = c.get("recommendation_reason", "")
+            if reason:
+                st.caption(f"Reason: {reason}")
+            _render_saved_parking_options(c)
+            sc1, sc2, sc3 = st.columns(3)
+            sc1.metric("A's Vote", f"#{vote_a.index(name)+1}" if name in vote_a else "-")
+            sc2.metric("B's Vote", f"#{vote_b.index(name)+1}" if name in vote_b else "-")
+            sc3.metric("Combined Score", f"{total_pts} pts")
 
         if st.button("Vote Again", use_container_width=True, key="direct_vote_again"):
             st.session_state.current_page = "venue_vote"
@@ -2940,21 +4095,18 @@ def render_final_result_page():
         st.error("Room ID is missing.")
         return
 
-    vote_a = _load_vote(room_id, "A")
-    vote_b = _load_vote(room_id, "B")
+    summary = _preference_summary(room_id)
+    keys = summary.get("keys", ["P1", "P2"])
+    votes = {key: _load_vote(room_id, key) for key in keys}
 
-    if not (vote_a and vote_b):
-        missing = []
-        if not vote_a:
-            missing.append("Person A")
-        if not vote_b:
-            missing.append("Person B")
-        st.info(f"Waiting for {' and '.join(missing)} to submit their ranking. Share this page with them and ask them to vote.")
+    if not all(votes.values()):
+        missing = [_role_label(key) for key in keys if not votes[key]]
+        st.info(f"Still waiting for {', '.join(missing)} to submit their ranking. You can share this page with the group to continue voting.")
         if st.button("🔄 Refresh"):
             st.rerun()
         return
 
-    final_3 = _compute_combined_ranking(vote_a, vote_b)[:3]
+    final_3 = _compute_combined_ranking(*votes.values())[:3]
 
     # Pull full candidate details
     rec = _load_room_recommendation(room_id)
@@ -2963,16 +4115,17 @@ def render_final_result_page():
         for c in rec.get("candidates", []):
             candidates_by_name[c.get("name", "")] = c
         _render_recommendation_warnings(rec.get("recommendation_meta", {}))
+        _render_recommendation_summary(rec.get("recommendation_text", ""))
 
     st.markdown(
         """
         <div style="background:linear-gradient(135deg,#fff7f0,#f0f7ff);border:1px solid rgba(80,130,200,0.2);
         border-radius:22px;padding:18px 22px;margin-bottom:18px;">
         <p style="margin:0;color:#3a5570;font-size:1rem;">
-        <strong>How we picked these:</strong> we used a Borda-count merge of both people's rankings:
-        your #1 pick scores 3 pts, #2 scores 2 pts, #3 scores 1 pt.
-        The three venues with the highest combined score are your shortlist.
-        <strong>The final choice is yours - discuss and book through whichever app you prefer.</strong>
+        <strong>How we ranked:</strong> We used Borda count to merge both users' rankings:
+        Each person's 1st place gets 3 points, 2nd place gets 2 points, 3rd place gets 1 point.
+        The top 3 places with the highest combined scores are your final shortlist.
+        <strong>Now discuss and choose your favorite, then book on your preferred platform.</strong>
         </p>
         </div>
         """,
@@ -2983,9 +4136,7 @@ def render_final_result_page():
     for i, name in enumerate(final_3):
         c = candidates_by_name.get(name, {})
         with st.container():
-            score_a = (3 - vote_a.index(name)) if name in vote_a else 0
-            score_b = (3 - vote_b.index(name)) if name in vote_b else 0
-            total_pts = score_a + score_b
+            total_pts = sum((len(ranking) - ranking.index(name)) if name in ranking else 0 for ranking in votes.values())
             st.markdown(
                 f"""
                 <div style="background:rgba(255,255,255,0.92);border:1.5px solid rgba(70,110,170,0.2);
@@ -3005,16 +4156,18 @@ def render_final_result_page():
             )
             reason = c.get("recommendation_reason", "")
             if reason:
-                st.caption(f"💡 {reason}")
-            sc1, sc2, sc3 = st.columns(3)
-            sc1.metric("Person A vote", f"#{vote_a.index(name)+1}" if name in vote_a else "Not ranked")
-            sc2.metric("Person B vote", f"#{vote_b.index(name)+1}" if name in vote_b else "Not ranked")
-            sc3.metric("Combined score", f"{total_pts} pts")
+                st.caption(f"Reason: {reason}")
+            _render_saved_parking_options(c)
+            vote_cols = st.columns(len(keys) + 1)
+            for col, key in zip(vote_cols, keys):
+                ranking = votes[key]
+                col.metric(_role_label(key), f"#{ranking.index(name)+1}" if name in ranking else "Not ranked")
+            vote_cols[-1].metric("Combined Score", f"{total_pts} pts")
 
     st.divider()
     st.success(
-        "These are your **Top 3 recommended meeting spots**. "
-        "Discuss with each other and use Google Maps, Yelp, or OpenTable to check reviews and make a reservation!"
+        "These are your **final 3 recommended meeting places**."
+        "Discuss together, then use Google Maps, Yelp, or any other platform to check reviews and make a reservation."
     )
 
     col_a, col_b, col_c = st.columns(3)
@@ -3333,7 +4486,6 @@ def render_user_info_step2_page():
     room_id = st.session_state.room_id
     role_label = st.session_state.user_role
     role_key = _normalize_user_role(role_label)
-    partner_key = _partner_role(role_key)
     if room_id:
         _render_result_ready_notifier(room_id, current_page="user_info_step2")
         st.caption("You can leave this tab open. We will keep checking the room and notify you when the shared recommendations are ready.")
@@ -3341,13 +4493,18 @@ def render_user_info_step2_page():
     if not str(room_id or "").strip():
         st.error("Room ID is missing. Please go back to Confirm Details first.")
         return
-    if role_key not in ("A", "B"):
+    if _role_index(role_key) is None:
         st.error("Role is missing. Please go back to Confirm Details and set your role.")
         return
 
     saved_preferences = _load_saved_preferences(room_id, role_key)
     summary = _preference_summary(room_id)
-    partner_preferences = summary["prefs_b"] if role_key == "A" else summary["prefs_a"]
+    participant_count = int(summary.get("participant_count", 2) or 2)
+    partner_keys = _partner_roles(role_key, total=participant_count)
+    partner_ready = [
+        key for key in partner_keys
+        if (summary.get("participants", {}).get(key, {}) or {}).get("preferences")
+    ]
     current_location = st.session_state.get(f"location_{role_key}") or _load_saved_location(room_id, role_key)
 
     defaults = {
@@ -3394,10 +4551,10 @@ def render_user_info_step2_page():
         else:
             st.info("Fill out this form and click Submit Preferences to save your choices for this room.")
     with status_cols[1]:
-        if partner_preferences:
-            st.success(f"✅ Person {partner_key} has already submitted preferences")
+        if len(partner_ready) == len(partner_keys):
+            st.success("All other participants have already submitted preferences")
         else:
-            st.info(f"Person {partner_key} has not submitted preferences yet")
+            st.info(f"Other preferences submitted: {len(partner_ready)}/{len(partner_keys)}")
 
     with st.container(border=True):
         st.subheader("Quick Basics")
@@ -3406,9 +4563,13 @@ def render_user_info_step2_page():
         with basics_left:
             meeting_type = st.selectbox(
                 "What are you meeting for?",
-                ["Dinner Date", "Lunch Date", "Coffee", "Drinks", "Activity", "Other"],
+                ROOM_MEETING_TYPE_OPTIONS,
                 key=f"meeting_type_{role_label}",
             )
+            if _is_business_meeting_type(meeting_type):
+                st.caption("Business mode prioritizes quiet professional venues, neutral atmosphere, arrival reliability, and parking.")
+            elif _is_shopping_meeting_type(meeting_type):
+                st.caption("Shopping mode can recommend malls, clothing stores, or department stores near the fair meeting area.")
             budget = st.slider(
                 "About how much per person?",
                 min_value=0,
@@ -3419,8 +4580,8 @@ def render_user_info_step2_page():
 
         with basics_right:
             cuisine = st.text_input(
-                "Any food preference? (optional)",
-                placeholder="e.g., Italian, Japanese, Mexican",
+                "Food preference or shopping goal? (optional)",
+                placeholder="e.g., Italian, Japanese, clothes, Nike shoes, suit, Plaza mall",
                 key=f"cuisine_{role_label}",
             )
             ambiance_preference = st.select_slider(
@@ -3466,7 +4627,7 @@ def render_user_info_step2_page():
         with preferences_left:
             venue_type = st.multiselect(
                 "What kinds of places sound good?",
-                ["Restaurant", "Cafe", "Bar", "Park", "Museum", "Theater"],
+                ["Restaurant", "Cafe", "Bar", "Park", "Mall", "Shopping", "Clothing Store", "Department Store", "Museum", "Theater", "Parking"],
                 key=f"venue_type_{role_label}",
             )
             surprise = st.checkbox(
@@ -3483,7 +4644,7 @@ def render_user_info_step2_page():
                 help="Pick every 30-minute time block that works for you.",
             )
 
-    st.caption("We keep only the shared time overlap between both people, and travel mode helps protect people with tighter commute limits.")
+    st.caption("We keep only the shared time overlap across everyone, and travel mode helps protect people with tighter commute limits.")
     submitted = st.button("Submit Preferences", type="primary", use_container_width=True, key=f"submit_preferences_{role_key}")
 
     if saved_preferences:
@@ -3512,10 +4673,10 @@ def render_user_info_step2_page():
         }
         _persist_user_preferences(room_id, role_key, payload)
         updated_summary = _preference_summary(room_id)
-        st.session_state["last_preferences_submit_message"] = f"Preferences saved to room {room_id} for Person {role_key}."
+        st.session_state["last_preferences_submit_message"] = f"Preferences saved to room {room_id} for {_role_label(role_key)}."
         st.session_state["last_preferences_submit_level"] = "success"
         if updated_summary["both_preferences_ready"] and updated_summary["both_locations_ready"]:
-            with st.spinner("Both people are ready - searching for venues and generating recommendations..."):
+            with st.spinner("Everyone is ready - searching for venues and generating recommendations..."):
                 rec_state = _compute_room_recommendations(room_id)
             if rec_state.get("status") == "ok":
                 candidate_dicts = _serialise_candidates_for_vote(
@@ -3526,6 +4687,8 @@ def render_user_info_step2_page():
                     "generated_at": _utc_timestamp(),
                     "room_id": room_id,
                     "candidates": candidate_dicts,
+                    "recommendation_meta": rec_state.get("recommendation_meta", {}),
+                    "recommendation_text": rec_state.get("recommendation_text", ""),
                 })
                 st.session_state["last_preferences_submit_message"] = "Recommendations generated! Time to vote for your favourites."
                 st.session_state["last_preferences_submit_level"] = "success"
@@ -3533,10 +4696,10 @@ def render_user_info_step2_page():
                 st.session_state.current_page = "check_result"
                 st.rerun()
             elif rec_state.get("status") == "no_candidates":
-                st.session_state["last_preferences_submit_message"] = "Both ready but no venues found in the area - try widening your distance preferences."
+                st.session_state["last_preferences_submit_message"] = "Everyone is ready but no venues were found in the area - try widening distance preferences."
                 st.session_state["last_preferences_submit_level"] = "warning"
             else:
-                st.session_state["last_preferences_submit_message"] = "Recommendation could not be generated yet. Both people may not be ready."
+                st.session_state["last_preferences_submit_message"] = "Recommendation could not be generated yet. Everyone may not be ready."
                 st.session_state["last_preferences_submit_level"] = "warning"
         st.session_state.selected_action = st.session_state.selected_action or "check_result"
         st.session_state.current_page = "check_result"
@@ -3549,11 +4712,9 @@ def render_user_info_step2_page():
             st.success(st.session_state["last_preferences_submit_message"])
         st.session_state["last_preferences_submit_message"] = ""
         st.session_state["last_preferences_submit_level"] = ""
-    if partner_preferences:
-        overlap_slots = _compute_shared_time_overlap(
-            updated_summary["prefs_a"].get("availability_slots", []),
-            updated_summary["prefs_b"].get("availability_slots", []),
-        )
+    if partner_ready:
+        slot_sets = [set(p.get("availability_slots", []) or []) for p in updated_summary.get("all_prefs", []) if p]
+        overlap_slots = sorted(set.intersection(*slot_sets)) if slot_sets and all(slot_sets) else []
         if overlap_slots:
             st.info(
                 "Shared time overlap: " +
@@ -3561,18 +4722,18 @@ def render_user_info_step2_page():
                 (" ..." if len(overlap_slots) > 8 else "")
             )
         else:
-            st.warning("No shared time overlap yet. Once both people select matching 30-minute blocks, we'll use only the intersection.")
+            st.warning("No shared time overlap yet. Once everyone selects matching 30-minute blocks, we'll use only the intersection.")
 
     if updated_summary["both_preferences_ready"]:
         if updated_summary["both_locations_ready"] and updated_summary["weighted_center"]:
             center = updated_summary["weighted_center"]
-            st.success("✅ Both people have submitted preferences. The shared weighted search center is ready.")
+            st.success("All participants have submitted preferences. The shared weighted search center is ready.")
             st.info(
                 f"Weighted center preview: {center['lat']:.5f}, {center['lon']:.5f} | "
-                f"A weight {updated_summary['weight_a']:.2f} vs B weight {updated_summary['weight_b']:.2f}"
+                + "weights: " + ", ".join(f"P{i+1} {w:.2f}" for i, w in enumerate(updated_summary.get("weights") or []))
             )
         else:
-            st.success("✅ Both people have submitted preferences. Once both locations are confirmed, we can compute the weighted center and candidate venues.")
+            st.success("All participants have submitted preferences. Once all locations are confirmed, we can compute the weighted center and candidate venues.")
 
 
 # ============================================================================

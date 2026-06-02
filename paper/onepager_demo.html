@@ -1,0 +1,34 @@
+<!doctype html><html><head><meta charset='utf-8'><style>
+@page { size: A4; margin: 9mm 11mm; }
+* { box-sizing: border-box; }
+body { font-family: "Microsoft YaHei","Segoe UI","Calibri",sans-serif;
+       font-size: 8.9pt; line-height: 1.32; color: #1a1a1a; max-width: 100%; }
+h1 { font-size: 13.5pt; margin: 0 0 4px; border-bottom: 2px solid #0A7B83; padding-bottom: 3px; color:#0A7B83; }
+h2 { font-size: 10.3pt; margin: 8px 0 3px; color:#0A7B83; }
+blockquote { background:#f4f8f8; border-left:3px solid #0A7B83; margin:5px 0;
+             padding:5px 9px; font-size:8.2pt; color:#333; }
+blockquote p { margin:2px 0; }
+table { border-collapse: collapse; width:100%; margin:5px 0; font-size:8pt; }
+th,td { border:1px solid #ccc; padding:2.5px 6px; text-align:left; vertical-align:top; }
+th { background:#0A7B83; color:#fff; }
+tr:nth-child(even) td { background:#f6f9f9; }
+code { background:#eef2f2; padding:1px 3px; border-radius:3px; font-size:7.7pt;
+       font-family:"Consolas",monospace; }
+ul,ol { margin:3px 0 3px 0; padding-left:18px; }
+li { margin:1px 0; }
+hr { border:none; border-top:1px solid #ddd; margin:6px 0; }
+p { margin:3px 0; }
+strong { color:#0A2540; }
+</style></head><body><h1>MeetHalfway AI — ACM SIGSPATIAL 2026 Demonstration Track</h1>
+<h2>The Project</h2>
+<p>MeetHalfway AI is an interactive web system that helps two people decide <strong>where to meet</strong>. Instead of returning a naive geometric midpoint, it computes a <strong>shared travel-time region</strong> from each person's isochrone (via OpenRouteService / Mapbox, intersected with Shapely), removes natural barriers such as rivers and highways from the overlap, and then recommends venues that are genuinely reachable and fair for both sides.</p>
+<p>Within that shared region, the system retrieves candidate venues (Mapbox / OpenStreetMap), enriches them with live signals — open status, crowding, queue risk, and reputation — and ranks them with an explainable, fairness-aware score that penalizes asymmetric travel time. Each recommendation comes with a map, a per-venue score breakdown, and a plain-language reason. The system is built with Streamlit and Folium, supports privacy-separated check-in (each participant submits their location independently), and degrades gracefully to free fallbacks when paid APIs are unavailable.</p>
+<h2>Why It Fits the Demonstration Track</h2>
+<ul>
+<li><strong>It is a running, interactive system.</strong> Attendees can drag two starting points, switch travel modes, and watch the fair region and ranked venues update live — exactly what a demo session is meant to showcase.</li>
+<li><strong>Spatial computation is the visible core.</strong> Isochrone retrieval, polygon intersection, natural-barrier subtraction, and travel-time fairness are surfaced directly on the map, not hidden behind an API.</li>
+<li><strong>It demonstrates responsible GeoAI in practice.</strong> Fairness scoring, privacy-separated interaction, and explainable recommendations let attendees inspect <em>why</em> a venue was chosen, making the spatial reasoning transparent.</li>
+<li><strong>It is robust under conference conditions.</strong> A built-in fallback chain (OpenStreetMap, open web snippets, keyword extraction, distance buffers) keeps the demo working even with unstable networks or missing API keys.</li>
+</ul>
+<h2>Why Submit</h2>
+<p>Meeting-place selection is a familiar spatial decision that most tools still solve poorly. MeetHalfway AI shows how isochrone-intersection fairness, context-aware venue retrieval, live signals, and explanation can be combined into a single, hands-on workflow. SIGSPATIAL is the natural home for this work: its audience cares about reachability, fairness, and location-based services, and the demonstration format lets that audience interact with the spatial reasoning directly rather than read about it.</p></body></html>

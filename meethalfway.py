@@ -125,12 +125,15 @@ VENUE_TYPES: Dict[str, Dict[str, str]] = {
     "cafe":        {"display": "咖啡店",         "query": "cafe coffee",                   "icon": "coffee"},
     "park":        {"display": "公园",           "query": "park",                          "icon": "tree"},
     "mall":        {"display": "商场/购物中心",   "query": "shopping mall",                 "icon": "shopping-bag"},
+    "clothing":    {"display": "服装店",         "query": "clothing store fashion apparel", "icon": "shopping-bag"},
+    "department_store": {"display": "百货商店",   "query": "department store",              "icon": "shopping-bag"},
     "cinema":      {"display": "电影院",         "query": "cinema movie theater",          "icon": "film"},
     "bar":         {"display": "酒吧/酒馆",       "query": "bar pub lounge",                "icon": "glass"},
     "bookstore":   {"display": "书店",           "query": "bookstore library",             "icon": "book"},
     "gas_station": {"display": "加油站/便利店",   "query": "gas station convenience store", "icon": "road"},
     "sports":      {"display": "运动/健身",       "query": "gym sports center stadium",     "icon": "futbol-o"},
     "museum":      {"display": "博物馆/展览",     "query": "museum gallery exhibition",     "icon": "university"},
+    "parking":     {"display": "停车场",         "query": "parking parking lot",           "icon": "car"},
 }
 
 _OVERPASS_FILTERS: Dict[str, List[str]] = {
@@ -138,12 +141,15 @@ _OVERPASS_FILTERS: Dict[str, List[str]] = {
     "cafe": ['nwr["amenity"="cafe"]'],
     "park": ['nwr["leisure"="park"]'],
     "mall": ['nwr["shop"="mall"]', 'nwr["building"="retail"]'],
+    "clothing": ['nwr["shop"~"^(clothes|fashion|shoes|boutique|jewelry|sports)$"]'],
+    "department_store": ['nwr["shop"="department_store"]'],
     "cinema": ['nwr["amenity"="cinema"]'],
     "bar": ['nwr["amenity"~"^(bar|pub)$"]'],
     "bookstore": ['nwr["shop"="books"]'],
     "gas_station": ['nwr["amenity"="fuel"]', 'nwr["shop"="convenience"]'],
     "sports": ['nwr["leisure"~"^(fitness_centre|sports_centre|stadium)$"]'],
     "museum": ['nwr["tourism"~"^(museum|gallery)$"]'],
+    "parking": ['nwr["amenity"="parking"]', 'nwr["amenity"="parking_entrance"]'],
 }
 
 # 场景预设：影响默认隐私模式 & 推荐场所类型排序
@@ -207,6 +213,8 @@ class CandidateRestaurant:
     time_vote_score: float = 0.0
     search_area_mode: str = "intersection"
     time_conflict: bool = False
+    closest_time_gap_minutes: float = 0.0
+    severe_time_gap: bool = False
     score_breakdown: Dict[str, float] = field(default_factory=dict)
 
 
@@ -357,13 +365,13 @@ class MeetHalfwayRecommender:
         a_fatigue: float,
         b_fatigue: float,
         time_conflict: bool = False,
-    ) -> Tuple[str, float, float, float]:
+    ) -> Tuple[str, float, float, float, float, bool]:
         """
         对单个候选场所进行“时间协商”打分：
         返回 (最佳时间段, 可用性重叠分, 半径容忍分, 时间投票分)。
         """
         if not time_slots:
-            return "", 0.5, 0.5, 0.5
+            return "", 0.5, 0.5, 0.5, 0.0, False
 
         loc = Location(candidate.lat, candidate.lon)
         ta = self._travel_minutes(a, loc) * a_fatigue
@@ -378,10 +386,53 @@ class MeetHalfwayRecommender:
         b_avail = set((availability or {}).get("b", time_slots))
 
         if time_conflict:
+            def _slot_to_minutes(slot: str) -> Optional[int]:
+                try:
+                    h, m = slot.split(":", 1)
+                    hh = int(h)
+                    mm = int(m)
+                    if hh < 0 or hh > 23 or mm not in (0, 30):
+                        return None
+                    return hh * 60 + mm
+                except Exception:
+                    return None
+
             radius_a = _clip01(1.0 - max(0.0, ta - tol_a) / tol_a)
             radius_b = _clip01(1.0 - max(0.0, tb - tol_b) / tol_b)
             radius_score = (radius_a + radius_b) / 2.0
-            return "No shared time available", 0.0, radius_score, 0.0
+
+            a_minutes = [(_slot_to_minutes(slot), slot) for slot in a_avail]
+            b_minutes = [(_slot_to_minutes(slot), slot) for slot in b_avail]
+            a_minutes = [(m, s) for m, s in a_minutes if m is not None]
+            b_minutes = [(m, s) for m, s in b_minutes if m is not None]
+
+            if not a_minutes or not b_minutes:
+                return "No shared time available", 0.0, radius_score, 0.0, 0.0, False
+
+            best_gap = 24 * 60
+            best_pair = (a_minutes[0][1], b_minutes[0][1])
+            best_votes = (0.5, 0.5)
+            for min_a, slot_a in a_minutes:
+                for min_b, slot_b in b_minutes:
+                    gap = abs(min_a - min_b)
+                    va = self._normalize_vote((time_votes or {}).get("a", {}).get(slot_a, 0.8))
+                    vb = self._normalize_vote((time_votes or {}).get("b", {}).get(slot_b, 0.8))
+                    # Prefer smaller schedule gaps, break ties by stronger combined preference.
+                    if gap < best_gap or (gap == best_gap and (va + vb) > sum(best_votes)):
+                        best_gap = gap
+                        best_pair = (slot_a, slot_b)
+                        best_votes = (va, vb)
+
+            severe_gap = best_gap > 120
+            proximity_score = _clip01(1.0 - best_gap / 240.0)
+            vote_score = _clip01(0.5 * ((best_votes[0] + best_votes[1]) / 2.0) + 0.5 * proximity_score)
+            if severe_gap:
+                proximity_score *= 0.45
+                vote_score *= 0.45
+                best_slot = f"Hard to align: A {best_pair[0]} / B {best_pair[1]}"
+            else:
+                best_slot = f"Closest compromise: A {best_pair[0]} / B {best_pair[1]}"
+            return best_slot, proximity_score, radius_score, vote_score, float(best_gap), severe_gap
 
         best_slot = time_slots[0]
         best_score = -1.0
@@ -414,7 +465,7 @@ class MeetHalfwayRecommender:
         radius_a = _clip01(1.0 - max(0.0, ta - tol_a) / tol_a)
         radius_b = _clip01(1.0 - max(0.0, tb - tol_b) / tol_b)
         radius_score = (radius_a + radius_b) / 2.0
-        return best_slot, best_overlap, radius_score, best_time_vote
+        return best_slot, best_overlap, radius_score, best_time_vote, 0.0, False
 
     def _place_vote_for_candidate(
         self,
@@ -1761,19 +1812,24 @@ class MeetHalfwayRecommender:
                 + 0.4 * fairness_balance
             )
 
-            c.best_time_slot, c.availability_overlap, c.radius_tolerance_score, c.time_vote_score = (
-                self._time_negotiation_for_candidate(
-                    c,
-                    a,
-                    b,
-                    active_slots,
-                    availability,
-                    time_votes,
-                    radius_tolerance,
-                    a_fatigue,
-                    b_fatigue,
-                    time_conflict,
-                )
+            (
+                c.best_time_slot,
+                c.availability_overlap,
+                c.radius_tolerance_score,
+                c.time_vote_score,
+                c.closest_time_gap_minutes,
+                c.severe_time_gap,
+            ) = self._time_negotiation_for_candidate(
+                c,
+                a,
+                b,
+                active_slots,
+                availability,
+                time_votes,
+                radius_tolerance,
+                a_fatigue,
+                b_fatigue,
+                time_conflict,
             )
             c.time_conflict = time_conflict
             c.mutual_vote_score = self._place_vote_for_candidate(c, place_votes)
@@ -1831,6 +1887,8 @@ class MeetHalfwayRecommender:
                 "venue_popularity": round(c.venue_popularity_score, 4),
                 "mutual_vote": round(c.mutual_vote_score, 4),
                 "time_vote": round(c.time_vote_score, 4),
+                "closest_time_gap_minutes": round(c.closest_time_gap_minutes, 2),
+                "severe_time_gap": 1.0 if c.severe_time_gap else 0.0,
             }
 
             logger.debug(
@@ -1901,13 +1959,12 @@ class MeetHalfwayRecommender:
             for x in top_items
         ]
 
-        # 无 OpenAI 或关闭 LLM 摘要时，使用本地模板汇总
-        if not self.use_llm_summary or not self._openai_ok or not self.openai_key:
+        def _build_local_summary() -> str:
             lines = [
                 f"推荐类型: {venue_display}（{cuisine}），预算: 人均{budget}元。",
                 f"目标场景: {time_slot}，{party_size}人。",
                 f"均衡中心点: ({center.lat:.6f}, {center.lon:.6f})",
-                "Top 推荐:",
+                "推荐结果:",
             ]
             for i, item in enumerate(structured, start=1):
                 iso_tag = "等时线内" if item["in_isochrone_zone"] else "边缘区"
@@ -1918,6 +1975,10 @@ class MeetHalfwayRecommender:
                 )
             return "\n".join(lines)
 
+        # 无 OpenAI 或关闭 LLM 摘要时，使用本地模板汇总
+        if not self.use_llm_summary or not self._openai_ok or not self.openai_key:
+            return _build_local_summary()
+
         prompt = {
             "task": f"根据候选{venue_display}结构化数据，输出简洁可执行的双人见面推荐（中文）",
             "constraints": [
@@ -1926,7 +1987,10 @@ class MeetHalfwayRecommender:
                 "强调时间公平性（fairness_delta_minutes 越小越好，差值>20分钟须警告）",
                 "指出是否有优惠活动和排队风险",
                 "明确该时间段与人数下的人流量与等位风险（低/中/高 + 预计分钟）",
-                "给出最终 Top3，每条附一句理由和具体行动建议",
+                "给出最终前3名，每条附一句理由和具体行动建议",
+                "除店名、品牌名、英文地址外，其余说明必须全部使用简体中文",
+                "不要输出英文标题、英文项目符号、英文行动提示或中英混杂句式",
+                "输出完整内容，不要在句子中间截断",
             ],
             "input": {
                 "person_a": {"lat": a.lat, "lon": a.lon},
@@ -1948,20 +2012,20 @@ class MeetHalfwayRecommender:
                 messages=[
                     {
                         "role": "system",
-                        "content": "你是城市约会顾问，回答用简体中文，直观、简洁、有行动建议。",
+                        "content": "你是城市约会顾问。请始终使用自然、流畅的简体中文输出；除餐厅专有名称外，不要使用英文。请直接给出适合网页展示的中文推荐文案，避免中英混写，避免句子截断。",
                     },
                     {
                         "role": "user",
                         "content": json.dumps(prompt, ensure_ascii=False),
                     },
                 ],
-                temperature=0.4,
-                max_tokens=220 if self.low_cost_mode else 600,
+                temperature=0.2,
+                max_tokens=380 if self.low_cost_mode else 700,
             )
             return resp.choices[0].message.content or "模型未返回文本。"
         except Exception as exc:
             logger.error("OpenAI 推荐生成失败: %s", exc)
-            return f"AI 推荐生成失败（{exc}），请检查 OpenAI 配置。"
+            return _build_local_summary()
 
     def build_explanations(
         self,

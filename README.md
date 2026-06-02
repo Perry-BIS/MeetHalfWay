@@ -84,13 +84,13 @@ Optional enhancements:
 ### 3) Run the app
 
 ```powershell
-streamlit run app_streamlit.py
+streamlit run app_streamlit_new.py
 ```
 
 ## Repository Structure (Competition Core)
 
-- `app_streamlit.py`: main visual app entry
-- `app_streamlit_new.py`: new experimental app entry
+- `app_streamlit_new.py`: main visual app entry
+- `app_streamlit.py`: compatibility wrapper that forwards to the new app
 - `meethalfway.py`: core algorithm and scoring
 - `requirements.txt`: dependency list
 - `.env.example`: environment template
@@ -106,5 +106,5 @@ streamlit run app_streamlit.py
 Recommended target: Streamlit Community Cloud
 
 1. Connect this repository.
-2. Set entry file to `app_streamlit.py`.
+2. Set entry file to `app_streamlit_new.py`.
 3. Configure secrets in the platform settings.

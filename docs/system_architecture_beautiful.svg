@@ -1,0 +1,291 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="1260" viewBox="0 0 900 1260">
+  <defs>
+    <!-- Backgrounds -->
+    <linearGradient id="bgGrad" x1="0" y1="0" x2="0.3" y2="1">
+      <stop offset="0%" stop-color="#0d1b2e"/>
+      <stop offset="100%" stop-color="#162133"/>
+    </linearGradient>
+    <linearGradient id="headerGrad" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#0d47a1"/>
+      <stop offset="60%" stop-color="#1565c0"/>
+      <stop offset="100%" stop-color="#1976d2"/>
+    </linearGradient>
+
+    <!-- Per-layer accent gradients -->
+    <linearGradient id="a1" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#ef5350"/>
+      <stop offset="100%" stop-color="#b71c1c"/>
+    </linearGradient>
+    <linearGradient id="a2" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#42a5f5"/>
+      <stop offset="100%" stop-color="#1565c0"/>
+    </linearGradient>
+    <linearGradient id="a3" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#ab47bc"/>
+      <stop offset="100%" stop-color="#6a1b9a"/>
+    </linearGradient>
+    <linearGradient id="a4" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#26c6da"/>
+      <stop offset="100%" stop-color="#00838f"/>
+    </linearGradient>
+    <linearGradient id="a5" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#66bb6a"/>
+      <stop offset="100%" stop-color="#2e7d32"/>
+    </linearGradient>
+
+    <!-- Card fills (semi-transparent bluish dark) -->
+    <linearGradient id="c1" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#1e2d42"/>
+      <stop offset="100%" stop-color="#1a2538"/>
+    </linearGradient>
+
+    <!-- Connector gradient -->
+    <linearGradient id="connLine" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#42a5f5" stop-opacity="0.7"/>
+      <stop offset="100%" stop-color="#66bb6a" stop-opacity="0.7"/>
+    </linearGradient>
+
+    <!-- Shadows -->
+    <filter id="cardShadow" x="-12%" y="-12%" width="124%" height="140%">
+      <feDropShadow dx="0" dy="8" stdDeviation="16" flood-color="#000000" flood-opacity="0.45"/>
+    </filter>
+    <filter id="iconGlow1" x="-30%" y="-30%" width="160%" height="160%">
+      <feDropShadow dx="0" dy="0" stdDeviation="8" flood-color="#ef5350" flood-opacity="0.55"/>
+    </filter>
+    <filter id="iconGlow2" x="-30%" y="-30%" width="160%" height="160%">
+      <feDropShadow dx="0" dy="0" stdDeviation="8" flood-color="#42a5f5" flood-opacity="0.55"/>
+    </filter>
+    <filter id="iconGlow3" x="-30%" y="-30%" width="160%" height="160%">
+      <feDropShadow dx="0" dy="0" stdDeviation="8" flood-color="#ab47bc" flood-opacity="0.55"/>
+    </filter>
+    <filter id="iconGlow4" x="-30%" y="-30%" width="160%" height="160%">
+      <feDropShadow dx="0" dy="0" stdDeviation="8" flood-color="#26c6da" flood-opacity="0.55"/>
+    </filter>
+    <filter id="iconGlow5" x="-30%" y="-30%" width="160%" height="160%">
+      <feDropShadow dx="0" dy="0" stdDeviation="8" flood-color="#66bb6a" flood-opacity="0.55"/>
+    </filter>
+    <filter id="headerShadow" x="-5%" y="-20%" width="110%" height="160%">
+      <feDropShadow dx="0" dy="6" stdDeviation="12" flood-color="#000000" flood-opacity="0.4"/>
+    </filter>
+
+    <!-- Arrow marker -->
+    <marker id="arrow1" viewBox="0 0 16 16" refX="8" refY="14" markerWidth="10" markerHeight="10" orient="auto">
+      <path d="M3 3 L8 14 L13 3" fill="none" stroke="url(#connLine)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+    </marker>
+
+    <!-- Dot pattern -->
+    <pattern id="dotpat" x="0" y="0" width="28" height="28" patternUnits="userSpaceOnUse">
+      <circle cx="2" cy="2" r="1.1" fill="#ffffff" fill-opacity="0.03"/>
+    </pattern>
+  </defs>
+
+  <!-- ── BG ── -->
+  <rect width="900" height="1260" fill="url(#bgGrad)"/>
+  <rect width="900" height="1260" fill="url(#dotpat)"/>
+
+  <!-- Decorative rings -->
+  <circle cx="870" cy="80" r="140" fill="none" stroke="#42a5f5" stroke-width="0.8" stroke-opacity="0.10"/>
+  <circle cx="870" cy="80" r="210" fill="none" stroke="#42a5f5" stroke-width="0.5" stroke-opacity="0.06"/>
+  <circle cx="30"  cy="1220" r="140" fill="none" stroke="#66bb6a" stroke-width="0.8" stroke-opacity="0.08"/>
+  <circle cx="30"  cy="1220" r="210" fill="none" stroke="#66bb6a" stroke-width="0.5" stroke-opacity="0.05"/>
+
+  <!-- ── HEADER ── -->
+  <rect x="44" y="44" width="812" height="118" rx="22" fill="url(#headerGrad)" filter="url(#headerShadow)"/>
+  <!-- Left glow stripe -->
+  <rect x="44" y="44" width="8" height="118" rx="4" fill="#ef5350"/>
+  <!-- Logo badge -->
+  <rect x="70" y="68" width="70" height="70" rx="14" fill="#ffffff" fill-opacity="0.10"/>
+  <text x="105" y="108" text-anchor="middle" style="font:900 30px 'Segoe UI',Arial,sans-serif; fill:#ffffff;">M</text>
+  <!-- Titles -->
+  <text x="162" y="92" style="font:700 12px 'Segoe UI',Arial,sans-serif; fill:#90caf9; letter-spacing:2.5px;">MEETHALFWAY AI</text>
+  <text x="162" y="126" style="font:700 36px 'Segoe UI',Arial,sans-serif; fill:#ffffff;">System Architecture</text>
+  <!-- Right badge -->
+  <rect x="718" y="68" width="118" height="70" rx="14" fill="#ffffff" fill-opacity="0.10"/>
+  <text x="777" y="97" text-anchor="middle" style="font:700 13px 'Segoe UI',Arial,sans-serif; fill:#90caf9; letter-spacing:1px;">LAYERS</text>
+  <text x="777" y="125" text-anchor="middle" style="font:900 30px 'Segoe UI',Arial,sans-serif; fill:#ffffff;">5</text>
+
+  <!-- ── VERTICAL CONNECTOR SPINE ── -->
+  <line x1="450" y1="232" x2="450" y2="1140"
+        stroke="url(#connLine)" stroke-width="2.5"
+        stroke-dasharray="7 11" stroke-linecap="round"/>
+
+  <!-- ════════════════════════════════════
+       LAYER 1 — User Layer
+  ════════════════════════════════════ -->
+  <rect x="60" y="200" width="780" height="138" rx="22" fill="url(#c1)" stroke="#ef5350" stroke-width="1.6" stroke-opacity="0.55" filter="url(#cardShadow)"/>
+  <!-- Top accent line -->
+  <rect x="60" y="200" width="780" height="5" rx="3" fill="url(#a1)"/>
+  <!-- Chip -->
+  <rect x="86" y="224" width="78" height="26" rx="13" fill="url(#a1)"/>
+  <text x="125" y="242" text-anchor="middle" style="font:700 12px 'Segoe UI',Arial,sans-serif; fill:#fff; letter-spacing:0.5px;">Layer 1</text>
+  <!-- Title -->
+  <text x="182" y="255" style="font:700 24px 'Segoe UI',Arial,sans-serif; fill:#ffd0cf;">User Layer</text>
+  <!-- Body -->
+  <text x="182" y="283" style="font:400 14.5px 'Segoe UI',Arial,sans-serif; fill:#9db8cc;">A / B users provide: address or GPS coordinates, travel mode,</text>
+  <text x="182" y="306" style="font:400 14.5px 'Segoe UI',Arial,sans-serif; fill:#9db8cc;">time slots, party size, venue preference, and budget.</text>
+  <!-- Icon -->
+  <circle cx="790" cy="269" r="38" fill="url(#a1)" filter="url(#iconGlow1)"/>
+  <!-- People icon -->
+  <circle cx="779" cy="257" r="9"  fill="none" stroke="#fff" stroke-width="2.2"/>
+  <path   d="M763 282 q0-10 16-10 16 0 16 10" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round"/>
+  <circle cx="800" cy="259" r="7"  fill="none" stroke="#fff" stroke-width="1.8"/>
+  <path   d="M787 282 q0-8 13-8 7 0 11 5" fill="none" stroke="#fff" stroke-width="1.8" stroke-linecap="round"/>
+
+  <!-- connector node -->
+  <circle cx="450" cy="338" r="9" fill="url(#a1)"/>
+  <circle cx="450" cy="338" r="4" fill="#fff"/>
+
+  <!-- ════════════════════════════════════
+       LAYER 2 — Streamlit UI
+  ════════════════════════════════════ -->
+  <rect x="60" y="368" width="780" height="138" rx="22" fill="url(#c1)" stroke="#42a5f5" stroke-width="1.6" stroke-opacity="0.55" filter="url(#cardShadow)"/>
+  <rect x="60" y="368" width="780" height="5" rx="3" fill="url(#a2)"/>
+  <rect x="86" y="392" width="78" height="26" rx="13" fill="url(#a2)"/>
+  <text x="125" y="410" text-anchor="middle" style="font:700 12px 'Segoe UI',Arial,sans-serif; fill:#fff; letter-spacing:0.5px;">Layer 2</text>
+  <text x="182" y="423" style="font:700 24px 'Segoe UI',Arial,sans-serif; fill:#bbdefb;">Streamlit UI</text>
+  <text x="182" y="451" style="font:400 14.5px 'Segoe UI',Arial,sans-serif; fill:#9db8cc;"><tspan style="font-family:monospace;font-size:13px;fill:#64b5f6;">app_streamlit.py</tspan><tspan style="fill:#9db8cc;">  — demo &amp; competition presentation</tspan></text>
+  <text x="182" y="474" style="font:400 14.5px 'Segoe UI',Arial,sans-serif; fill:#9db8cc;"><tspan style="font-family:monospace;font-size:13px;fill:#64b5f6;">app_streamlit_new.py</tspan><tspan style="fill:#9db8cc;">  — room-based multi-step flow</tspan></text>
+  <!-- Icon: monitor/screen -->
+  <circle cx="790" cy="437" r="38" fill="url(#a2)" filter="url(#iconGlow2)"/>
+  <rect  x="772" y="420" width="36" height="26" rx="4" fill="none" stroke="#fff" stroke-width="2.2"/>
+  <line x1="782" y1="446" x2="798" y2="446" stroke="#fff" stroke-width="2" stroke-linecap="round"/>
+  <line x1="790" y1="446" x2="790" y2="454" stroke="#fff" stroke-width="2" stroke-linecap="round"/>
+  <line x1="783" y1="454" x2="797" y2="454" stroke="#fff" stroke-width="2" stroke-linecap="round"/>
+
+  <circle cx="450" cy="506" r="9" fill="url(#a2)"/>
+  <circle cx="450" cy="506" r="4" fill="#fff"/>
+
+  <!-- ════════════════════════════════════
+       LAYER 3 — Application Orchestration
+  ════════════════════════════════════ -->
+  <rect x="60" y="536" width="780" height="150" rx="22" fill="url(#c1)" stroke="#ab47bc" stroke-width="1.6" stroke-opacity="0.55" filter="url(#cardShadow)"/>
+  <rect x="60" y="536" width="780" height="5" rx="3" fill="url(#a3)"/>
+  <rect x="86" y="560" width="78" height="26" rx="13" fill="url(#a3)"/>
+  <text x="125" y="578" text-anchor="middle" style="font:700 12px 'Segoe UI',Arial,sans-serif; fill:#fff; letter-spacing:0.5px;">Layer 3</text>
+  <text x="182" y="591" style="font:700 24px 'Segoe UI',Arial,sans-serif; fill:#e1bee7;">Application Orchestration</text>
+  <!-- Tag chips row -->
+  <rect x="182" y="605" width="108" height="24" rx="12" fill="#6a1b9a" fill-opacity="0.7"/>
+  <text x="236" y="622" text-anchor="middle" style="font:400 12px 'Segoe UI',Arial,sans-serif; fill:#e1bee7;">Session state</text>
+  <rect x="300" y="605" width="98" height="24" rx="12" fill="#6a1b9a" fill-opacity="0.7"/>
+  <text x="349" y="622" text-anchor="middle" style="font:400 12px 'Segoe UI',Arial,sans-serif; fill:#e1bee7;">Invite links</text>
+  <rect x="408" y="605" width="88" height="24" rx="12" fill="#6a1b9a" fill-opacity="0.7"/>
+  <text x="452" y="622" text-anchor="middle" style="font:400 12px 'Segoe UI',Arial,sans-serif; fill:#e1bee7;">Room join</text>
+  <rect x="506" y="605" width="118" height="24" rx="12" fill="#6a1b9a" fill-opacity="0.7"/>
+  <text x="565" y="622" text-anchor="middle" style="font:400 12px 'Segoe UI',Arial,sans-serif; fill:#e1bee7;">Vote persistence</text>
+  <!-- second row -->
+  <rect x="182" y="638" width="178" height="24" rx="12" fill="#6a1b9a" fill-opacity="0.7"/>
+  <text x="271" y="655" text-anchor="middle" style="font:400 12px 'Segoe UI',Arial,sans-serif; fill:#e1bee7;">Preference summary</text>
+  <rect x="370" y="638" width="170" height="24" rx="12" fill="#6a1b9a" fill-opacity="0.7"/>
+  <text x="455" y="655" text-anchor="middle" style="font:400 12px 'Segoe UI',Arial,sans-serif; fill:#e1bee7;">Result invalidation</text>
+  <!-- Icon: gears/cogs -->
+  <circle cx="790" cy="611" r="38" fill="url(#a3)" filter="url(#iconGlow3)"/>
+  <circle cx="790" cy="611" r="13" fill="none" stroke="#fff" stroke-width="2.5"/>
+  <circle cx="790" cy="611" r="5"  fill="#fff"/>
+  <line x1="790" y1="593" x2="790" y2="598" stroke="#fff" stroke-width="2.5" stroke-linecap="round"/>
+  <line x1="790" y1="624" x2="790" y2="629" stroke="#fff" stroke-width="2.5" stroke-linecap="round"/>
+  <line x1="772" y1="611" x2="777" y2="611" stroke="#fff" stroke-width="2.5" stroke-linecap="round"/>
+  <line x1="803" y1="611" x2="808" y2="611" stroke="#fff" stroke-width="2.5" stroke-linecap="round"/>
+  <line x1="777" y1="598" x2="780" y2="601" stroke="#fff" stroke-width="2" stroke-linecap="round"/>
+  <line x1="800" y1="621" x2="803" y2="624" stroke="#fff" stroke-width="2" stroke-linecap="round"/>
+  <line x1="803" y1="598" x2="800" y2="601" stroke="#fff" stroke-width="2" stroke-linecap="round"/>
+  <line x1="780" y1="621" x2="777" y2="624" stroke="#fff" stroke-width="2" stroke-linecap="round"/>
+
+  <circle cx="450" cy="686" r="9" fill="url(#a3)"/>
+  <circle cx="450" cy="686" r="4" fill="#fff"/>
+
+  <!-- ════════════════════════════════════
+       LAYER 4 — Recommendation Engine
+  ════════════════════════════════════ -->
+  <rect x="60" y="716" width="780" height="162" rx="22" fill="url(#c1)" stroke="#26c6da" stroke-width="1.6" stroke-opacity="0.55" filter="url(#cardShadow)"/>
+  <rect x="60" y="716" width="780" height="5" rx="3" fill="url(#a4)"/>
+  <rect x="86" y="740" width="78" height="26" rx="13" fill="url(#a4)"/>
+  <text x="125" y="758" text-anchor="middle" style="font:700 12px 'Segoe UI',Arial,sans-serif; fill:#fff; letter-spacing:0.5px;">Layer 4</text>
+  <text x="182" y="771" style="font:700 24px 'Segoe UI',Arial,sans-serif; fill:#b2ebf2;">Recommendation Engine</text>
+  <text x="182" y="799" style="font:400 14px 'Segoe UI',Arial,sans-serif; fill:#7ecdd8;"><tspan style="font-family:monospace;font-size:13px;">MeetHalfwayRecommender</tspan></text>
+  <!-- Tag chips row 1 -->
+  <rect x="182" y="812" width="94" height="24" rx="12" fill="#00838f" fill-opacity="0.7"/>
+  <text x="229" y="829" text-anchor="middle" style="font:400 12px 'Segoe UI',Arial,sans-serif; fill:#e0f7fa;">Geocoding</text>
+  <rect x="286" y="812" width="148" height="24" rx="12" fill="#00838f" fill-opacity="0.7"/>
+  <text x="360" y="829" text-anchor="middle" style="font:400 12px 'Segoe UI',Arial,sans-serif; fill:#e0f7fa;">Midpoint weighting</text>
+  <rect x="444" y="812" width="158" height="24" rx="12" fill="#00838f" fill-opacity="0.7"/>
+  <text x="523" y="829" text-anchor="middle" style="font:400 12px 'Segoe UI',Arial,sans-serif; fill:#e0f7fa;">Isochrone overlap</text>
+  <!-- Tag chips row 2 -->
+  <rect x="182" y="845" width="144" height="24" rx="12" fill="#00838f" fill-opacity="0.7"/>
+  <text x="254" y="862" text-anchor="middle" style="font:400 12px 'Segoe UI',Arial,sans-serif; fill:#e0f7fa;">Candidate search</text>
+  <rect x="336" y="845" width="140" height="24" rx="12" fill="#00838f" fill-opacity="0.7"/>
+  <text x="406" y="862" text-anchor="middle" style="font:400 12px 'Segoe UI',Arial,sans-serif; fill:#e0f7fa;">Web enrichment</text>
+  <rect x="486" y="845" width="82" height="24" rx="12" fill="#00838f" fill-opacity="0.7"/>
+  <text x="527" y="862" text-anchor="middle" style="font:400 12px 'Segoe UI',Arial,sans-serif; fill:#e0f7fa;">Scoring</text>
+  <rect x="578" y="845" width="110" height="24" rx="12" fill="#00838f" fill-opacity="0.7"/>
+  <text x="633" y="862" text-anchor="middle" style="font:400 12px 'Segoe UI',Arial,sans-serif; fill:#e0f7fa;">Explanations</text>
+  <!-- Icon: CPU chip -->
+  <circle cx="790" cy="797" r="38" fill="url(#a4)" filter="url(#iconGlow4)"/>
+  <rect x="773" y="780" width="34" height="34" rx="5" fill="none" stroke="#fff" stroke-width="2.5"/>
+  <rect x="779" y="786" width="22" height="22" rx="3" fill="none" stroke="#fff" stroke-width="1.8"/>
+  <!-- chip pins -->
+  <line x1="778" y1="787" x2="773" y2="782" stroke="#fff" stroke-width="1.5" stroke-linecap="round"/>
+  <line x1="790" y1="780" x2="790" y2="776" stroke="#fff" stroke-width="1.8" stroke-linecap="round"/>
+  <line x1="800" y1="787" x2="807" y2="782" stroke="#fff" stroke-width="1.5" stroke-linecap="round"/>
+  <line x1="807" y1="797" x2="812" y2="797" stroke="#fff" stroke-width="1.8" stroke-linecap="round"/>
+  <line x1="800" y1="807" x2="807" y2="812" stroke="#fff" stroke-width="1.5" stroke-linecap="round"/>
+  <line x1="790" y1="814" x2="790" y2="818" stroke="#fff" stroke-width="1.8" stroke-linecap="round"/>
+  <line x1="778" y1="807" x2="773" y2="812" stroke="#fff" stroke-width="1.5" stroke-linecap="round"/>
+  <line x1="773" y1="797" x2="768" y2="797" stroke="#fff" stroke-width="1.8" stroke-linecap="round"/>
+
+  <circle cx="450" cy="878" r="9" fill="url(#a4)"/>
+  <circle cx="450" cy="878" r="4" fill="#fff"/>
+
+  <!-- ════════════════════════════════════
+       LAYER 5 — Output Layer
+  ════════════════════════════════════ -->
+  <rect x="60" y="908" width="780" height="150" rx="22" fill="url(#c1)" stroke="#66bb6a" stroke-width="1.6" stroke-opacity="0.55" filter="url(#cardShadow)"/>
+  <rect x="60" y="908" width="780" height="5" rx="3" fill="url(#a5)"/>
+  <rect x="86" y="932" width="78" height="26" rx="13" fill="url(#a5)"/>
+  <text x="125" y="950" text-anchor="middle" style="font:700 12px 'Segoe UI',Arial,sans-serif; fill:#fff; letter-spacing:0.5px;">Layer 5</text>
+  <text x="182" y="963" style="font:700 24px 'Segoe UI',Arial,sans-serif; fill:#c8e6c9;">Output Layer</text>
+  <!-- Tag chips -->
+  <rect x="182" y="977" width="200" height="24" rx="12" fill="#2e7d32" fill-opacity="0.7"/>
+  <text x="282" y="994" text-anchor="middle" style="font:400 12px 'Segoe UI',Arial,sans-serif; fill:#c8e6c9;">Ranked recommendations</text>
+  <rect x="392" y="977" width="190" height="24" rx="12" fill="#2e7d32" fill-opacity="0.7"/>
+  <text x="487" y="994" text-anchor="middle" style="font:400 12px 'Segoe UI',Arial,sans-serif; fill:#c8e6c9;">Fairness explanation</text>
+  <rect x="182" y="1010" width="110" height="24" rx="12" fill="#2e7d32" fill-opacity="0.7"/>
+  <text x="237" y="1027" text-anchor="middle" style="font:400 12px 'Segoe UI',Arial,sans-serif; fill:#c8e6c9;">Folium map</text>
+  <rect x="302" y="1010" width="88" height="24" rx="12" fill="#2e7d32" fill-opacity="0.7"/>
+  <text x="346" y="1027" text-anchor="middle" style="font:400 12px 'Segoe UI',Arial,sans-serif; fill:#c8e6c9;">Cards</text>
+  <rect x="400" y="1010" width="112" height="24" rx="12" fill="#2e7d32" fill-opacity="0.7"/>
+  <text x="456" y="1027" text-anchor="middle" style="font:400 12px 'Segoe UI',Arial,sans-serif; fill:#c8e6c9;">Result pages</text>
+  <rect x="522" y="1010" width="168" height="24" rx="12" fill="#2e7d32" fill-opacity="0.7"/>
+  <text x="606" y="1027" text-anchor="middle" style="font:400 12px 'Segoe UI',Arial,sans-serif; fill:#c8e6c9;">Surprise recommendation</text>
+  <!-- Icon: chart/output -->
+  <circle cx="790" cy="983" r="38" fill="url(#a5)" filter="url(#iconGlow5)"/>
+  <!-- Bar chart icon -->
+  <rect x="773" y="999" width="9"  height="18" rx="2" fill="#fff"/>
+  <rect x="786" y="989" width="9"  height="28" rx="2" fill="#fff"/>
+  <rect x="799" y="993" width="9"  height="24" rx="2" fill="#fff"/>
+  <line x1="769" y1="1017" x2="815" y2="1017" stroke="#fff" stroke-width="2" stroke-linecap="round"/>
+  <!-- Star on top -->
+  <text x="790" y="978" text-anchor="middle" style="font:700 16px Arial,sans-serif; fill:#fff; opacity:0.9;">★</text>
+
+  <!-- ── BOTTOM SUMMARY STRIP ── -->
+  <rect x="60" y="1098" width="780" height="88" rx="18"
+        fill="#0d1b2e" fill-opacity="0.7"
+        stroke="#1e88e5" stroke-width="1" stroke-opacity="0.3"/>
+  <!-- 3 stats -->
+  <line x1="330" y1="1114" x2="330" y2="1170" stroke="#1e88e5" stroke-width="1" stroke-opacity="0.3"/>
+  <line x1="570" y1="1114" x2="570" y2="1170" stroke="#1e88e5" stroke-width="1" stroke-opacity="0.3"/>
+  <!-- stat 1 -->
+  <text x="195" y="1145" text-anchor="middle" style="font:700 18px 'Segoe UI',Arial,sans-serif; fill:#ef9a9a;">Async + Retry</text>
+  <text x="195" y="1168" text-anchor="middle" style="font:400 12px 'Segoe UI',Arial,sans-serif; fill:#7f9bb0;">Resilient API handling</text>
+  <!-- stat 2 -->
+  <text x="450" y="1145" text-anchor="middle" style="font:700 18px 'Segoe UI',Arial,sans-serif; fill:#80cbc4;">3-Tier Fallback</text>
+  <text x="450" y="1168" text-anchor="middle" style="font:400 12px 'Segoe UI',Arial,sans-serif; fill:#7f9bb0;">Mapbox → Overpass → OSM</text>
+  <!-- stat 3 -->
+  <text x="706" y="1145" text-anchor="middle" style="font:700 18px 'Segoe UI',Arial,sans-serif; fill:#a5d6a7;">Explainable AI</text>
+  <text x="706" y="1168" text-anchor="middle" style="font:400 12px 'Segoe UI',Arial,sans-serif; fill:#7f9bb0;">Transparent score breakdown</text>
+
+  <!-- ── FOOTER ── -->
+  <text x="450" y="1238" text-anchor="middle"
+        style="font:400 12px 'Segoe UI',Arial,sans-serif; fill:#3d5a73; letter-spacing:1.5px;">
+    MEETHALFWAY AI  ·  Fair · Real-Time · Explainable Meeting-Place Recommendation
+  </text>
+</svg>

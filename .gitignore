@@ -19,3 +19,7 @@ feedback.txt
 
 # Local helper scripts not needed for release
 fix_*.py
+
+# Local PPT style reference assets (not part of project source)
+_ppt_style_ref/
+_ppt_style_ref.zip

@@ -1,0 +1,158 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="860" height="1370" viewBox="0 0 860 1370">
+  <defs>
+    <linearGradient id="titleBar" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#1a4a7a"/>
+      <stop offset="100%" stop-color="#2562a8"/>
+    </linearGradient>
+    <filter id="s1" x="-4%" y="-8%" width="108%" height="124%">
+      <feDropShadow dx="0" dy="3" stdDeviation="5" flood-color="#b0c4d8" flood-opacity="0.35"/>
+    </filter>
+    <filter id="s2" x="-3%" y="-6%" width="106%" height="118%">
+      <feDropShadow dx="0" dy="2" stdDeviation="3" flood-color="#b0c4d8" flood-opacity="0.25"/>
+    </filter>
+  </defs>
+
+  <!-- White background -->
+  <rect width="860" height="1340" fill="#ffffff"/>
+  <!-- Subtle page edge shadow -->
+  <rect width="860" height="1340" fill="none" stroke="#e2e8f0" stroke-width="2"/>
+
+  <!-- ── TITLE HEADER ── -->
+  <rect x="0" y="0" width="860" height="68" fill="url(#titleBar)"/>
+  <text x="36" y="44" style="font:700 28px 'Segoe UI',Arial,sans-serif; fill:#ffffff;">Scoring Design</text>
+  <text x="680" y="44" style="font:400 13px 'Segoe UI',Arial,sans-serif; fill:#a8c8f0;">MeetHalfway AI</text>
+
+  <!-- ── FORMULA BOX ── -->
+  <rect x="30" y="92" width="800" height="74" rx="14" fill="#f0f6ff" stroke="#c5d8f0" stroke-width="1.5" filter="url(#s2)"/>
+  <text x="50" y="127" style="font:600 15.5px 'Segoe UI',Arial,sans-serif; fill:#1a3a5c;">
+    Final Score = w_dist × distance  +  w_rating × rating  +  w_pref × fairness
+  </text>
+  <text x="50" y="152" style="font:400 13.5px 'Segoe UI',Arial,sans-serif; fill:#4a6a8a;">
+    + 0.9 × spatiotemporal_bonus  +  iso_bonus  +  0.25 × promo  −  penalties
+  </text>
+
+  <!-- weights row -->
+  <rect x="30" y="182" width="246" height="40" rx="10" fill="#e8f2ff" stroke="#c0d4ee" stroke-width="1.2"/>
+  <text x="153" y="207" text-anchor="middle" style="font:500 13.5px 'Segoe UI',Arial,sans-serif; fill:#1a4a7a;">w_dist = 0.34</text>
+  <rect x="307" y="182" width="246" height="40" rx="10" fill="#e8f2ff" stroke="#c0d4ee" stroke-width="1.2"/>
+  <text x="430" y="207" text-anchor="middle" style="font:500 13.5px 'Segoe UI',Arial,sans-serif; fill:#1a4a7a;">w_rating = 0.25</text>
+  <rect x="584" y="182" width="246" height="40" rx="10" fill="#e8f2ff" stroke="#c0d4ee" stroke-width="1.2"/>
+  <text x="707" y="207" text-anchor="middle" style="font:500 13.5px 'Segoe UI',Arial,sans-serif; fill:#1a4a7a;">w_pref = 0.21</text>
+
+  <!-- ═══════════════════════════════
+       SECTION 1 — Distance Component
+  ═══════════════════════════════ -->
+  <rect x="30" y="244" width="800" height="36" rx="8" fill="#1a4a7a"/>
+  <text x="50" y="267" style="font:700 14.5px 'Segoe UI',Arial,sans-serif; fill:#ffffff; dominant-baseline:middle;">① Distance Component  —  dist_component</text>
+
+  <rect x="30" y="290" width="800" height="76" rx="12" fill="#f8fbff" stroke="#dce8f5" stroke-width="1.4" filter="url(#s2)"/>
+  <text x="52" y="318" style="font:400 13.5px 'Segoe UI',Arial,sans-serif; fill:#2a4a6a;">Formula:</text>
+  <text x="130" y="318" style="font:600 13.5px 'Courier New',monospace; fill:#1a3a6a;">dist_component = 1 − ( distance_to_center_km / max_center_dist )</text>
+  <text x="52" y="348" style="font:400 13px 'Segoe UI',Arial,sans-serif; fill:#5a7a9a;">Venues closer to the weighted fair center score higher. Normalised to [0, 1].</text>
+
+  <!-- ═══════════════════════════════
+       SECTION 2 — Rating Component
+  ═══════════════════════════════ -->
+  <rect x="30" y="382" width="800" height="36" rx="8" fill="#1a4a7a"/>
+  <text x="50" y="405" style="font:700 14.5px 'Segoe UI',Arial,sans-serif; fill:#ffffff; dominant-baseline:middle;">② Rating Component  —  rating_proxy</text>
+
+  <rect x="30" y="428" width="800" height="94" rx="12" fill="#f8fbff" stroke="#dce8f5" stroke-width="1.4" filter="url(#s2)"/>
+  <text x="52" y="456" style="font:400 13.5px 'Segoe UI',Arial,sans-serif; fill:#2a4a6a;">Base:    Mapbox relevance score or OSM default = <tspan style="font-weight:600;">0.5</tspan></text>
+  <text x="52" y="480" style="font:400 13.5px 'Segoe UI',Arial,sans-serif; fill:#2a4a6a;">Yelp blending: </text>
+  <text x="172" y="480" style="font:600 13.5px 'Courier New',monospace; fill:#1a3a6a;">rating_proxy = 0.5 × base + 0.5 × yelp_blended_rating</text>
+  <text x="52" y="504" style="font:400 13px 'Segoe UI',Arial,sans-serif; fill:#5a7a9a;">Yelp confidence weighting: higher review count → Yelp signal weighs more.</text>
+
+  <!-- ═══════════════════════════════
+       SECTION 3 — Fairness Component
+  ═══════════════════════════════ -->
+  <rect x="30" y="538" width="800" height="36" rx="8" fill="#1a4a7a"/>
+  <text x="50" y="561" style="font:700 14.5px 'Segoe UI',Arial,sans-serif; fill:#ffffff; dominant-baseline:middle;">③ Fairness Component  —  pref_component  (travel-time fairness)</text>
+
+  <rect x="30" y="584" width="800" height="120" rx="12" fill="#f8fbff" stroke="#dce8f5" stroke-width="1.4" filter="url(#s2)"/>
+  <text x="52" y="612" style="font:600 13.5px 'Courier New',monospace; fill:#1a3a6a;">time_gap      = | travel_min_A − travel_min_B |</text>
+  <text x="52" y="636" style="font:600 13.5px 'Courier New',monospace; fill:#1a3a6a;">fair_penalty  = exp( time_gap / 10 ) − 1        ← 0 when equal</text>
+  <text x="52" y="660" style="font:600 13.5px 'Courier New',monospace; fill:#1a3a6a;">fair_balance  = 1 − time_gap / (tA + tB)        ← 1 when equal</text>
+  <text x="52" y="684" style="font:600 13.5px 'Courier New',monospace; fill:#1a3a6a;">pref          = 0.6 × max(0, 1 − penalty/5) + 0.4 × balance</text>
+  <text x="52" y="706" style="font:400 12.5px 'Segoe UI',Arial,sans-serif; fill:#5a7a9a;">Gap &gt; 20 min → exponential drop. Tired-person fatigue factor 1.3× applied to their travel time.</text>
+
+  <!-- ═══════════════════════════════
+       SECTION 4 — Spatiotemporal Bonus
+  ═══════════════════════════════ -->
+  <rect x="30" y="720" width="800" height="36" rx="8" fill="#2e5e9a"/>
+  <text x="50" y="743" style="font:700 14.5px 'Segoe UI',Arial,sans-serif; fill:#ffffff; dominant-baseline:middle;">④ Spatiotemporal Bonus  ×0.9  (5 sub-components)</text>
+
+  <rect x="30" y="766" width="800" height="178" rx="12" fill="#f8fbff" stroke="#dce8f5" stroke-width="1.4" filter="url(#s2)"/>
+  <text x="52" y="794" style="font:600 13.5px 'Courier New',monospace; fill:#1a3a6a;">spatiotemporal_bonus =</text>
+  <!-- sub items -->
+  <rect x="60" y="804" width="16" height="16" rx="4" fill="#4a90d9"/>
+  <text x="84" y="817" style="font:400 13.5px 'Segoe UI',Arial,sans-serif; fill:#2a4a6a;"><tspan style="font-weight:600;">0.23</tspan> × radius_tolerance_score  — user willingness to travel mapped to minutes</text>
+  <rect x="60" y="826" width="16" height="16" rx="4" fill="#4a90d9"/>
+  <text x="84" y="839" style="font:400 13.5px 'Segoe UI',Arial,sans-serif; fill:#2a4a6a;"><tspan style="font-weight:600;">0.23</tspan> × availability_overlap     — fraction of shared calendar slots</text>
+  <rect x="60" y="848" width="16" height="16" rx="4" fill="#4a90d9"/>
+  <text x="84" y="861" style="font:400 13.5px 'Segoe UI',Arial,sans-serif; fill:#2a4a6a;"><tspan style="font-weight:600;">0.18</tspan> × venue_popularity_score   — 0.55 × rating + 0.45 × crowd_density_balance</text>
+  <rect x="60" y="870" width="16" height="16" rx="4" fill="#4a90d9"/>
+  <text x="84" y="883" style="font:400 13.5px 'Segoe UI',Arial,sans-serif; fill:#2a4a6a;"><tspan style="font-weight:600;">0.20</tspan> × mutual_vote_score        — 0.65 × avg_vote + 0.35 × vote_agreement</text>
+  <rect x="60" y="892" width="16" height="16" rx="4" fill="#4a90d9"/>
+  <text x="84" y="905" style="font:400 13.5px 'Segoe UI',Arial,sans-serif; fill:#2a4a6a;"><tspan style="font-weight:600;">0.16</tspan> × time_vote_score          — 0.65 × slot_overlap + 0.35 × time_vote_agreement</text>
+  <text x="84" y="926" style="font:400 13px 'Segoe UI',Arial,sans-serif; fill:#7a9ab8;">                                   − 0.5  (offset to centre around zero)</text>
+
+  <!-- ═══════════════════════════════
+       SECTION 5 — Isochrone Bonus
+  ═══════════════════════════════ -->
+  <rect x="30" y="959" width="800" height="36" rx="8" fill="#2e5e9a"/>
+  <text x="50" y="982" style="font:700 14.5px 'Segoe UI',Arial,sans-serif; fill:#ffffff; dominant-baseline:middle;">⑤ Isochrone Intersection Bonus</text>
+
+  <rect x="30" y="1005" width="390" height="64" rx="12" fill="#edfaf2" stroke="#a8dfc0" stroke-width="1.4" filter="url(#s2)"/>
+  <text x="50" y="1031" style="font:700 15px 'Segoe UI',Arial,sans-serif; fill:#1e6b3a;">+ 0.4</text>
+  <text x="100" y="1031" style="font:400 13.5px 'Segoe UI',Arial,sans-serif; fill:#2a5a3a;">venue inside isochrone intersection</text>
+  <text x="50" y="1055" style="font:400 12.5px 'Segoe UI',Arial,sans-serif; fill:#5a8a6a;">Both users can reach it within 20 minutes.</text>
+
+  <rect x="440" y="1005" width="390" height="64" rx="12" fill="#fff4f4" stroke="#f0b8b8" stroke-width="1.4" filter="url(#s2)"/>
+  <text x="460" y="1031" style="font:700 15px 'Segoe UI',Arial,sans-serif; fill:#c0392b;">− 0.6</text>
+  <text x="510" y="1031" style="font:400 13.5px 'Segoe UI',Arial,sans-serif; fill:#6a2a2a;">venue outside isochrone intersection</text>
+  <text x="460" y="1055" style="font:400 12.5px 'Segoe UI',Arial,sans-serif; fill:#8a5a5a;">One or both users significantly over-travel.</text>
+
+  <!-- ═══════════════════════════════
+       SECTION 6 — Web Signal Penalties
+  ═══════════════════════════════ -->
+  <rect x="30" y="1085" width="800" height="36" rx="8" fill="#2e5e9a"/>
+  <text x="50" y="1108" style="font:700 14.5px 'Segoe UI',Arial,sans-serif; fill:#ffffff; dominant-baseline:middle;">⑥ Web-Signal Adjustments  (Tavily / DuckDuckGo + Yelp)</text>
+
+  <rect x="30" y="1131" width="800" height="166" rx="12" fill="#f8fbff" stroke="#dce8f5" stroke-width="1.4" filter="url(#s2)"/>
+
+  <!-- Status row -->
+  <text x="52" y="1157" style="font:700 13.5px 'Segoe UI',Arial,sans-serif; fill:#2a4a6a;">Status penalty</text>
+  <rect x="178" y="1141" width="76" height="26" rx="10" fill="#c8f0d8" stroke="#80c090" stroke-width="1"/>
+  <text x="216" y="1159" text-anchor="middle" style="font:600 12px 'Segoe UI',Arial,sans-serif; fill:#1a6030;">open: 0.0</text>
+  <rect x="264" y="1141" width="106" height="26" rx="10" fill="#fff0c0" stroke="#d0a860" stroke-width="1"/>
+  <text x="317" y="1159" text-anchor="middle" style="font:600 12px 'Segoe UI',Arial,sans-serif; fill:#806020;">uncertain: −0.12</text>
+  <rect x="380" y="1141" width="96" height="26" rx="10" fill="#ffd8d8" stroke="#d08080" stroke-width="1"/>
+  <text x="428" y="1159" text-anchor="middle" style="font:600 12px 'Segoe UI',Arial,sans-serif; fill:#902020;">closed: −1.40</text>
+
+  <!-- Queue row -->
+  <text x="52" y="1191" style="font:700 13.5px 'Segoe UI',Arial,sans-serif; fill:#2a4a6a;">Queue penalty</text>
+  <rect x="178" y="1175" width="76" height="26" rx="10" fill="#c8f0d8" stroke="#80c090" stroke-width="1"/>
+  <text x="216" y="1193" text-anchor="middle" style="font:600 12px 'Segoe UI',Arial,sans-serif; fill:#1a6030;">low: 0.00</text>
+  <rect x="264" y="1175" width="106" height="26" rx="10" fill="#fff0c0" stroke="#d0a860" stroke-width="1"/>
+  <text x="317" y="1193" text-anchor="middle" style="font:600 12px 'Segoe UI',Arial,sans-serif; fill:#806020;">medium: −0.08</text>
+  <rect x="380" y="1175" width="86" height="26" rx="10" fill="#ffd8d8" stroke="#d08080" stroke-width="1"/>
+  <text x="423" y="1193" text-anchor="middle" style="font:600 12px 'Segoe UI',Arial,sans-serif; fill:#902020;">high: −0.18</text>
+  <rect x="476" y="1175" width="100" height="26" rx="10" fill="#f0f0f0" stroke="#b0b0b0" stroke-width="1"/>
+  <text x="526" y="1193" text-anchor="middle" style="font:600 12px 'Segoe UI',Arial,sans-serif; fill:#505050;">unknown: −0.05</text>
+
+  <!-- Crowd -->
+  <text x="52" y="1225" style="font:700 13.5px 'Segoe UI',Arial,sans-serif; fill:#2a4a6a;">Crowd penalty</text>
+  <text x="178" y="1225" style="font:600 13px 'Courier New',monospace; fill:#1a3a6a;">max(queue_p, crowd_index × 0.22 + wait_min / 180)</text>
+
+  <!-- Promo / Risk -->
+  <text x="52" y="1253" style="font:700 13.5px 'Segoe UI',Arial,sans-serif; fill:#2a4a6a;">Promo bonus</text>
+  <text x="178" y="1253" style="font:400 13px 'Segoe UI',Arial,sans-serif; fill:#2a6a3a;">+0.25 × promo_bonus (0.6 if discount/coupon detected)</text>
+  <text x="52" y="1277" style="font:700 13.5px 'Segoe UI',Arial,sans-serif; fill:#2a4a6a;">Risk penalty</text>
+  <text x="178" y="1277" style="font:400 13px 'Segoe UI',Arial,sans-serif; fill:#8a2020;">−0.50 × risk_penalty (0.8 if closure/hygiene risk detected)</text>
+
+  <!-- ── FOOTER ── -->
+  <line x1="30" y1="1319" x2="830" y2="1319" stroke="#dde8f4" stroke-width="1.2"/>
+  <text x="430" y="1345" text-anchor="middle" style="font:400 12px 'Segoe UI',Arial,sans-serif; fill:#8aa0b8; letter-spacing:1px;">
+    All sub-scores clipped to [0, 1] before weighting  ·  final_score = max(0, raw)
+  </text>
+</svg>

@@ -1,0 +1,170 @@
+\documentclass[sigconf]{acmart}
+
+% ACM SIGSPATIAL 2026 Demo Track draft.
+% Official requirements checked from:
+% https://sigspatial2026.sigspatial.org/demo-submission.html
+% - Up to 4 pages including references.
+% - Demo paper title should end with [Demo] for the submitted version.
+% - Single-blind: replace the author TODO fields before submission.
+
+\AtBeginDocument{%
+  \providecommand\BibTeX{{%
+    Bib\TeX}}}
+
+\copyrightyear{2026}
+\acmYear{2026}
+\acmConference[SIGSPATIAL '26]{Proceedings of the 34th ACM International Conference on Advances in Geographic Information Systems}{November 3--6, 2026}{Riverside, CA, USA}
+\acmBooktitle{Proceedings of the 34th ACM International Conference on Advances in Geographic Information Systems (SIGSPATIAL '26), November 3--6, 2026, Riverside, CA, USA}
+% Initial submissions normally do not have final DOI/ISBN metadata.
+% Uncomment and fill these for the camera-ready version if ACM provides them.
+% \acmDOI{TODO}
+% \acmISBN{TODO}
+
+\title{MeetHalfway AI: Fairness-Aware and LLM-Augmented Urban Meeting-Place Recommendation [Demo]}
+
+\author{TODO: First Author}
+\affiliation{%
+  \institution{TODO: Institution}
+  \city{TODO}
+  \country{TODO}}
+\email{TODO@example.edu}
+
+\author{TODO: Second Author}
+\affiliation{%
+  \institution{TODO: Institution}
+  \city{TODO}
+  \country{TODO}}
+\email{TODO@example.edu}
+
+\renewcommand{\shortauthors}{TODO et al.}
+
+\begin{abstract}
+Choosing where to meet is a common spatial decision problem, but the result is often negotiated through ad hoc map searches, geometric midpoints, or incomplete venue reviews. Existing work has studied meeting-place recommendation, group meetup queries, ride-sharing rendezvous points, and point-of-interest (POI) recommendation. MeetHalfway AI focuses on a complementary system question: how can an interactive demo combine travel-time feasibility, fairness, venue semantics, and user-facing explanation in one workflow? The system computes a shared feasible region from travel-time isochrones or distance-tolerance regions, retrieves candidate POIs from geospatial services and open map data, enriches candidates with live web signals, and ranks venues using a fairness-aware score that penalizes asymmetric travel time, closures, crowding, queue risk, and poor preference fit. An LLM-assisted extractor converts unstructured venue snippets into structured status and risk signals, with deterministic keyword fallbacks for robustness. The demo visualizes reachable regions, shared overlap, ranked venues, and natural-language explanations while supporting privacy-separated check-ins and meeting-context preferences such as business meetings, dates, and friend gatherings.
+\end{abstract}
+
+\begin{CCSXML}
+<ccs2012>
+   <concept>
+       <concept_id>10002951.10003260.10003277</concept_id>
+       <concept_desc>Information systems~Geographic information systems</concept_desc>
+       <concept_significance>500</concept_significance>
+       </concept>
+   <concept>
+       <concept_id>10002951.10003260.10003300</concept_id>
+       <concept_desc>Information systems~Location based services</concept_desc>
+       <concept_significance>300</concept_significance>
+       </concept>
+   <concept>
+       <concept_id>10003120.10003121.10003129</concept_id>
+       <concept_desc>Human-centered computing~Interactive systems and tools</concept_desc>
+       <concept_significance>300</concept_significance>
+       </concept>
+</ccs2012>
+\end{CCSXML}
+
+\ccsdesc[500]{Information systems~Geographic information systems}
+\ccsdesc[300]{Information systems~Location based services}
+\ccsdesc[300]{Human-centered computing~Interactive systems and tools}
+
+\keywords{meeting-place recommendation, isochrones, spatial fairness, point-of-interest recommendation, explainable GeoAI, large language models}
+
+\begin{document}
+
+\maketitle
+
+\section{Introduction}
+People frequently need to select a place that is not merely central on a map, but fair, open, socially appropriate, and easy to explain. A geometric midpoint can place one user across a river, behind a freeway barrier, or near an unsuitable venue. A standard POI search can find popular places, but it usually does not make travel-time fairness explicit. In addition, social meetings carry semantic requirements: a quiet cafe may be better for a business meeting, a public and well-lit venue may be better for a first meeting, and a lively restaurant may be better for friends.
+
+Prior work already covers important pieces of this problem, including meeting-place recommendation systems~\cite{kim2023meeting}, group meetup route queries~\cite{chen2021groupmeetup}, common meeting point mining from GPS traces~\cite{khetarpaul2012mining}, ride-sharing meeting point selection~\cite{czioska2017location,czioska2017gis}, and POI recommendation~\cite{sanchez2022poi,liu2013poi}. Recent work has also begun to examine LLMs for POI recommendation and geographic reasoning~\cite{wang2024embracing,lv2026reasoning}. MeetHalfway AI is therefore not positioned as the first meeting-place recommender. Instead, it presents an interactive, fairness-aware, and LLM-augmented demo that integrates spatial feasibility, semantic venue filtering, live signals, and explanations.
+
+The demo makes three contributions:
+\begin{enumerate}
+    \item \textbf{Isochrone-grounded spatial fairness.} It computes a shared feasible region from travel-time isochrones or participant-specific distance tolerances, rather than ranking only by geometric midpoint distance.
+    \item \textbf{Meeting-context-aware venue filtering.} It retrieves POIs in the shared area, enriches them with live venue evidence, and uses LLM-assisted structured extraction to identify open status, crowding, waiting time, and risk signals.
+    \item \textbf{Explainable and privacy-aware interaction.} It visualizes spatial overlap, ranked recommendations, score components, warnings, and natural-language reasons while allowing participants to submit locations separately instead of directly sharing exact coordinates with each other.
+\end{enumerate}
+
+\section{Demo Experience}
+MeetHalfway AI is implemented as a Streamlit web application backed by a Python recommendation engine. The attendee can run either a direct two-person flow or a room-based flow where each participant submits their own location and preferences independently. Inputs include location, travel mode, travel-radius tolerance, availability slots, budget, venue type, cuisine or activity preference, dietary restrictions, and ambiance preference. The system then returns a map, an overlap-aware candidate list, warnings for infeasible or conflicting constraints, and a concise recommendation narrative.
+
+\begin{figure}[t]
+\centering
+\fbox{\begin{minipage}{0.94\linewidth}
+\small
+\textbf{Interactive workflow.}
+Participants $\rightarrow$ private check-in and preferences $\rightarrow$ isochrone or radius overlap $\rightarrow$ POI retrieval $\rightarrow$ live signal and LLM extraction $\rightarrow$ fairness-aware ranking $\rightarrow$ map, cards, explanations, and optional voting.
+\end{minipage}}
+\caption{MeetHalfway AI turns a social meeting decision into a visible spatial reasoning pipeline.}
+\label{fig:workflow}
+\end{figure}
+
+The intended conference demonstration will use a live urban scenario around Riverside, California. Attendees can drag or enter two starting points, choose a scenario such as a business meeting or dinner date, and observe how the ranked venues change when one participant reduces their travel tolerance, switches from driving to walking, or selects a quieter ambiance. The demo is designed to be robust under conference-network variability: if paid geospatial or LLM services are unavailable, the system falls back to OpenStreetMap/Overpass, DuckDuckGo snippets, local keyword extraction, and distance-buffer approximations.
+
+\section{System Design}
+\subsection{Spatial Feasibility}
+Given two participants $A$ and $B$ with starting locations $l_A,l_B$, the system requests travel-time isochrones for a selected mode and duration, producing regions $R_A$ and $R_B$. The preferred feasible region is
+\[
+S = R_A \cap R_B,
+\]
+which represents locations reachable by both users under comparable travel-time constraints. When exact isochrones are unavailable, the engine constructs distance-tolerance buffers using participant-selected radii. If the intersection is empty, the UI reports that the pair is too far apart for a strict fair recommendation or, in a relaxed mode, searches a union fallback while marking the result as less fair.
+
+Candidate venues are tagged according to whether they lie inside the shared feasible region. For a candidate $p$, the engine estimates travel times $T(l_A,p)$ and $T(l_B,p)$ and computes a fairness gap
+\[
+\Delta_t(p)=|T(l_A,p)-T(l_B,p)|.
+\]
+The ranking includes an exponential penalty, $\exp(\Delta_t/10)-1$, so severely asymmetric options decline faster than mildly imbalanced ones. This is intentionally more conservative than a simple midpoint distance: the system rewards venues that are both geographically plausible and balanced in estimated effort.
+
+\subsection{Candidate Retrieval and Semantic Enrichment}
+MeetHalfway AI retrieves venues through a fallback chain. It queries Mapbox geocoding/POI search when configured, uses OpenRouteService or Mapbox for isochrones when keys are available, and falls back to OpenStreetMap Overpass and Nominatim when needed. The current code supports multiple venue categories, including restaurants, cafes, parks, malls, cinemas, bars, bookstores, museums, sports venues, parking, and convenience-oriented stops.
+
+For live venue signals, the engine asynchronously searches web snippets using Tavily when configured and DuckDuckGo as a no-key fallback. It optionally queries Yelp Fusion for rating and review-count signals. An LLM prompt converts unstructured snippets into a compact JSON object containing status, queue level, crowd index, estimated wait time, promotion bonus, risk penalty, confidence, and a short reason. This structured output is used as a filter and ranking signal. If the LLM fails or no key is provided, deterministic keyword extraction supplies a conservative fallback.
+
+\subsection{Ranking and Explanation}
+The final score combines spatial, temporal, preference, and venue-quality signals:
+\[
+\begin{split}
+score(p) = &\ w_d D(p) + w_r R(p) + w_f F(p) + B_{web}(p)\\
+& - P_{risk}(p) - P_{crowd}(p) + B_{iso}(p) + B_{st}(p),
+\end{split}
+\]
+where $D$ rewards closeness to the negotiated center, $R$ represents rating/reputation, $F$ rewards fair travel time, $B_{iso}$ rewards candidates inside the shared region, and $B_{st}$ aggregates availability overlap, radius tolerance, popularity balance, time preference, and mutual voting signals. The UI exposes these components as score breakdowns and human-readable explanations such as why a venue is inside the feasible region, whether both users have overlapping availability, and whether crowd or queue risk affects the recommendation.
+
+\section{Implementation}
+The prototype is organized around two main files. \texttt{meethalfway.py} implements the recommendation engine, including geocoding, isochrone retrieval, polygon intersection, POI search, asynchronous web enrichment, LLM/keyword extraction, scoring, explanation generation, and Folium map rendering. \texttt{app\_streamlit\_new.py} implements the user-facing Streamlit application, room state, preference forms, direct and privacy-separated flows, time-slot negotiation, candidate cards, warnings, and optional voting.
+
+\begin{table}[t]
+\caption{Core demo modules and user-visible value.}
+\label{tab:modules}
+\centering
+\small
+\begin{tabular}{@{}p{0.24\linewidth}p{0.27\linewidth}p{0.32\linewidth}@{}}
+\toprule
+\textbf{Module} & \textbf{Implementation} & \textbf{Demo value}\\
+\midrule
+Spatial fairness & Shapely polygons, ORS/Mapbox isochrones, radius fallback & Shows where both users can reasonably meet\\
+POI retrieval & Mapbox, Overpass, Nominatim fallback & Keeps the demo usable with or without paid APIs\\
+Live signals & Async HTTP, Tavily, DuckDuckGo, Yelp & Adds open, queue, crowd, and reputation evidence\\
+Semantic filter & LLM JSON extraction plus keyword fallback & Converts text snippets into ranking signals\\
+Explanation UI & Streamlit, Folium, score breakdowns & Lets users inspect why a venue was selected\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The system uses Python 3.10+, Streamlit, Folium, Shapely, \texttt{httpx}/\texttt{asyncio}, OpenAI-compatible chat APIs, and environment-variable configuration for external services. The implementation explicitly tracks fallback status and warning states so that failures degrade into explainable approximations instead of silent crashes. The privacy design is interaction-level rather than cryptographic: participants can submit locations separately and view the shared recommendation, while a production deployment should replace the local JSON room-state cache with encrypted or transient storage.
+
+\section{Related Work and Positioning}
+Meeting-place recommendation has been explored directly, including subway-station-based recommendation with travel-time fairness~\cite{kim2023meeting}. Group meetup work frames the problem as optimizing meeting POIs and routes for multiple users~\cite{chen2021groupmeetup}, while GPS-trace mining identifies common meeting points under spatio-temporal constraints~\cite{khetarpaul2012mining}. Ride-sharing research studies pickup and drop-off meeting points with GIS workflows, travel-time precomputation, and facility suitability~\cite{czioska2017location,czioska2017gis}. POI recommendation is a mature area with extensive work on geographic, temporal, social, and contextual signals~\cite{sanchez2022poi,liu2013poi}. LLM-based POI recommendation is newer, with recent work emphasizing language models and geographic reasoning~\cite{wang2024embracing,lv2026reasoning}.
+
+MeetHalfway AI differs from these lines by emphasizing an end-to-end, interactive demo for urban social meeting decisions. The contribution is not a new optimal-route theorem or a claim of first-in-class recommendation. Rather, the system demonstrates how isochrone intersection, travel-time fairness, context-aware POI retrieval, live semantic signals, and explanation can be integrated into a single user-facing spatial AI workflow.
+
+\section{Conclusion}
+MeetHalfway AI demonstrates a practical meeting-place recommendation workflow that makes spatial fairness visible and actionable. By combining shared reachability regions, POI retrieval, live venue signals, LLM-assisted semantic extraction, and explanation, the system helps users negotiate not only where a venue is, but why it is fair and suitable for a particular meeting context. The demo is well suited to SIGSPATIAL because it exposes spatial computation, interactive visualization, and responsible GeoAI tradeoffs in a running system.
+
+\begin{acks}
+Generative AI tools, including OpenAI ChatGPT/Codex, were used to assist with manuscript drafting, wording, and LaTeX organization. The authors reviewed and edited the technical claims, implementation descriptions, citations, and final content.
+\end{acks}
+
+\bibliographystyle{ACM-Reference-Format}
+\bibliography{references}
+
+\end{document}
