@@ -32,7 +32,9 @@ from meethalfway import (
 )
 
 
-load_dotenv()
+# Load .env from this file's directory so the app works regardless of the
+# working directory it is launched from (e.g. `streamlit run` from a parent dir).
+load_dotenv(Path(__file__).with_name(".env"))
 st.set_page_config(page_title="MeetHalfway AI", layout="wide")
 
 
@@ -85,6 +87,8 @@ def init_session_state():
         st.session_state.direct_recommendation_meta = {}
     if "direct_recommendation_text" not in st.session_state:
         st.session_state.direct_recommendation_text = ""
+    if "direct_map_geometry" not in st.session_state:
+        st.session_state.direct_map_geometry = None
 
 
 init_session_state()
@@ -94,7 +98,7 @@ init_session_state()
 # ============================================================================
 # Shared Room Storage
 # ============================================================================
-MAX_PARTICIPANTS = 5  # 支持最多5人
+MAX_PARTICIPANTS = 5  # up to 5 participants
 ROOM_STATE_PATH = Path(__file__).with_name("room_state.json")
 STREAMLIT_CONFIG_PATH = Path(__file__).with_name(".streamlit").joinpath("config.toml")
 
@@ -104,7 +108,7 @@ def _utc_timestamp() -> str:
 
 
 def _normalize_user_role(user_role: str) -> str:
-    # 支持P1~P5编号，兼容旧A/B
+    # P1~P5 keys, backward-compatible with legacy A/B
     role = str(user_role or "").strip().upper()
     if role in {"A", "B"}:
         return role
@@ -112,10 +116,10 @@ def _normalize_user_role(user_role: str) -> str:
         idx = int(role[1:])
         if 1 <= idx <= 5:
             return f"P{idx}"
-    # 兼容数字
+    # numeric compatibility
     if role.isdigit() and 1 <= int(role) <= 5:
         return f"P{int(role)}"
-    # 默认A/B映射
+    # default A/B mapping
     if role.endswith("A"):
         return "P1"
     if role.endswith("B"):
@@ -261,7 +265,7 @@ def _participant_record(room_id: str, user_role: str) -> Dict[str, Any]:
 
 
 def _partner_roles(user_role: str, total: int = None) -> list:
-    # 返回除自己外的所有角色key
+    # return all role keys except the caller's own
     me = _normalize_user_role(user_role)
     n = total if total is not None else MAX_PARTICIPANTS
     keys = [f"P{i}" for i in range(1, n+1)]
@@ -420,8 +424,8 @@ def _render_radius_selector_block(
 
 def _preference_summary(room_id: str) -> Dict[str, Any]:
     """
-    汇总所有参与者的location和preferences，支持2-5人。
-    返回：
+    Aggregate all participants' locations and preferences (supports 2-5 people).
+    Returns:
       - participants: {P1: {...}, P2: {...}, ...}
       - all_prefs: [dict, ...]
       - all_locs: [dict, ...]
@@ -491,6 +495,41 @@ def _load_llm_settings() -> Tuple[Optional[str], str, Optional[str]]:
     model_name = (os.getenv("MODEL_NAME") or os.getenv("OPENAI_MODEL") or "gpt-4o-mini").strip()
     openai_base = (os.getenv("OPENAI_API_BASE") or "").strip() or None
     return openai_key, model_name, openai_base
+
+
+def build_engine_from_env(
+    *,
+    transport: str = "transit",
+    isochrone_minutes: int = 20,
+    use_yelp: bool = True,
+    use_llm: Optional[bool] = None,
+    low_cost_mode: bool = True,
+    max_enriched_candidates: Optional[int] = None,
+) -> MeetHalfwayRecommender:
+    """Single source of truth for building the recommendation engine from env vars.
+
+    Replaces four near-identical inline constructions across the app. ``use_llm``
+    defaults to "on iff an OpenAI key is present"; pass ``False`` to force the
+    keyword-only path (e.g. cheap parking lookups).
+    """
+    openai_key, model_name, openai_base = _load_llm_settings()
+    llm_on = bool(openai_key) if use_llm is None else (use_llm and bool(openai_key))
+    return MeetHalfwayRecommender(
+        mapbox_token=os.getenv("MAPBOX_ACCESS_TOKEN", "").strip(),
+        ors_api_key=(os.getenv("OPENROUTESERVICE_API_KEY") or os.getenv("ORS_API_KEY") or "").strip() or None,
+        yelp_api_key=os.getenv("YELP_API_KEY", "").strip() or None,
+        tavily_key=os.getenv("TAVILY_API_KEY", "").strip(),
+        openai_key=openai_key,
+        openai_model=model_name,
+        openai_base=openai_base,
+        transport=transport,
+        isochrone_minutes=isochrone_minutes,
+        use_yelp=use_yelp,
+        use_llm_extraction=llm_on,
+        use_llm_summary=llm_on,
+        low_cost_mode=low_cost_mode,
+        max_enriched_candidates=max_enriched_candidates,
+    )
 
 
 def _summarize_preference_context(prefs_a: Dict[str, Any], prefs_b: Dict[str, Any]) -> Tuple[float, str, str]:
@@ -580,6 +619,7 @@ def _reset_direct_flow_results() -> None:
     st.session_state.direct_votes = {"A": [], "B": []}
     st.session_state.direct_recommendation_meta = {}
     st.session_state.direct_recommendation_text = ""
+    st.session_state.direct_map_geometry = None
 
 
 def _load_direct_vote(user_role: str) -> list[str]:
@@ -679,19 +719,13 @@ def _build_room_recommendation(room_id: str, force: bool = False) -> Optional[Di
         return None
 
     try:
-        mapbox_token = (os.getenv("MAPBOX_ACCESS_TOKEN") or "").strip()
-        ors_key = (os.getenv("OPENROUTESERVICE_API_KEY") or os.getenv("ORS_API_KEY") or "").strip() or None
-        yelp_key = (os.getenv("YELP_API_KEY") or "").strip() or None
-        tavily_key = (os.getenv("TAVILY_API_KEY") or "").strip()
-        openai_key, model_name, openai_base = _load_llm_settings()
-
-        # 多人支持：聚合所有人的location和preferences
+        # Multi-person: aggregate everyone's location and preferences
         all_prefs = summary.get("all_prefs", [])
         all_locs = summary.get("all_locs", [])
         n = len(all_prefs)
         if n < 2:
             return None
-        # venue_type和cuisine聚合（简单取第一个/合并）
+        # Aggregate venue_type and cuisine (take the first / merge)
         venue_type = None
         for p in all_prefs:
             if p.get("venue_type"):
@@ -705,34 +739,22 @@ def _build_room_recommendation(room_id: str, force: bool = False) -> Optional[Di
                 cuisine_keyword = p.get("cuisine")
                 break
 
-        # 距离半径，取最大/平均
+        # Distance radius (max / average)
         distances = [float(p.get("distance_miles", 15)) for p in all_prefs]
         radii_km = [max(1.0, d) * 1.60934 for d in distances]
-        # 位置对象
+        # Location objects
         loc_objs = [Location(float(l["lat"]), float(l["lon"])) for l in all_locs]
         center = Location(float(summary["weighted_center"]["lat"]), float(summary["weighted_center"]["lon"]))
 
-        engine = MeetHalfwayRecommender(
-            mapbox_token=mapbox_token,
-            ors_api_key=ors_key,
-            yelp_api_key=yelp_key,
-            tavily_key=tavily_key,
-            openai_key=openai_key,
-            openai_model=model_name,
-            openai_base=openai_base,
-            transport="transit",
-            low_cost_mode=True,
-            use_yelp=False,
-            use_llm_extraction=bool(openai_key),
-            use_llm_summary=bool(openai_key),
-            max_enriched_candidates=2,
+        engine = build_engine_from_env(
+            transport="transit", use_yelp=False, max_enriched_candidates=2,
         )
 
-        # 多人交集区域（需扩展engine，暂用所有人半径的交集/中心）
-        # 这里只做简单聚合，实际可扩展为多圆交集
+        # Multi-person shared area (radius intersection / center for now)
+        # Simple aggregation here; could extend to a full multi-circle intersection
         intersection = None
         if hasattr(engine, "get_intersection_from_radii"):
-            # 如果engine支持多点
+            # if the engine supports multiple points
             try:
                 intersection = engine.get_intersection_from_radii(*loc_objs, *radii_km)
             except Exception:
@@ -765,7 +787,7 @@ def _build_room_recommendation(room_id: str, force: bool = False) -> Optional[Di
         scored = []
         for c in candidates:
             place_loc = Location(float(c.lat), float(c.lon))
-            # 多人公平性：最大-最小距离
+            # Multi-person fairness: max - min distance
             dists = [engine.haversine_km(loc, place_loc) for loc in loc_objs]
             fairness_gap = max(dists) - min(dists) if len(dists) > 1 else 0
             scored.append(
@@ -1078,7 +1100,7 @@ def _build_recommendation_meta(
     meeting_time_alignment = meeting_time_alignment or {}
     return {
         "search_area_mode": area_mode,
-        "radius_overlap_exists": area_mode == "intersection",
+        "radius_overlap_exists": area_mode in ("intersection", "isochrone"),
         "time_overlap_exists": time_overlap_exists,
         "shared_slots": overlap_slots,
         "person_a_slots": list(prefs_a.get("availability_slots", []) or []),
@@ -1474,45 +1496,47 @@ def _compute_room_recommendations(room_id: str) -> Dict[str, Any]:
         transport_counts[mode] = transport_counts.get(mode, 0) + 1
     transport = max(transport_counts, key=transport_counts.get)
 
-    openai_key, model_name, openai_base = _load_llm_settings()
-    engine = MeetHalfwayRecommender(
-        mapbox_token=os.getenv("MAPBOX_ACCESS_TOKEN", "").strip(),
-        ors_api_key=os.getenv("OPENROUTESERVICE_API_KEY", "").strip() or None,
-        yelp_api_key=os.getenv("YELP_API_KEY", "").strip() or None,
-        tavily_key=os.getenv("TAVILY_API_KEY", "").strip(),
-        openai_key=openai_key,
-        openai_model=model_name,
-        openai_base=openai_base,
-        transport=transport,
-        isochrone_minutes=20,
-        use_yelp=True,
-        use_llm_extraction=bool(openai_key),
-        use_llm_summary=bool(openai_key),
-        low_cost_mode=True,
-    )
+    engine = build_engine_from_env(transport=transport, use_yelp=True)
 
     loc_objs = [Location(float(l["lat"]), float(l["lon"])) for l in all_locs]
     center = Location(float(summary["weighted_center"]["lat"]), float(summary["weighted_center"]["lon"]))
     radii_km = [max(1.0, float(p.get("distance_miles", 15))) * 1.60934 for p in all_prefs]
     intersection = None
     area_mode = "unknown"
-    try:
-        circles = [engine.get_distance_circle(loc, radius_km) for loc, radius_km in zip(loc_objs, radii_km)]
-        circles = [circle for circle in circles if circle is not None]
-        if circles:
-            intersection = circles[0]
-            for circle in circles[1:]:
-                intersection = intersection.intersection(circle)
-            if getattr(intersection, "is_empty", False):
+    # Per-participant reachable regions (aligned with loc_objs), used for the map.
+    region_polys: list = [None] * len(loc_objs)
+
+    # Primary feasibility mechanism (paper §3.1): real travel-time isochrones,
+    # each participant's budget derived from their distance tolerance + mode.
+    minutes_list = [
+        max(5, int(round(_distance_miles_to_minutes(p.get("distance_miles", 15), p.get("travel_mode")))))
+        for p in all_prefs
+    ]
+    iso_area = engine.get_multi_isochrone_search_area(loc_objs, minutes_list=minutes_list, transport=transport)
+    if iso_area.get("overlap_exists") and iso_area.get("geometry") is not None:
+        intersection = iso_area["geometry"]
+        area_mode = "isochrone"
+        region_polys = iso_area.get("regions") or region_polys
+    else:
+        # Fall back to radius-tolerance circles when isochrones don't overlap.
+        participant_circles = [engine.get_distance_circle(loc, radius_km) for loc, radius_km in zip(loc_objs, radii_km)]
+        region_polys = participant_circles
+        try:
+            circles = [circle for circle in participant_circles if circle is not None]
+            if circles:
                 intersection = circles[0]
                 for circle in circles[1:]:
-                    intersection = intersection.union(circle)
-                area_mode = "union_fallback"
-            else:
-                area_mode = "intersection"
-    except Exception:
-        intersection = None
-        area_mode = "unknown"
+                    intersection = intersection.intersection(circle)
+                if getattr(intersection, "is_empty", False):
+                    intersection = circles[0]
+                    for circle in circles[1:]:
+                        intersection = intersection.union(circle)
+                    area_mode = "union_fallback"
+                else:
+                    area_mode = "intersection"
+        except Exception:
+            intersection = None
+            area_mode = "unknown"
 
     cuisine_plan = [str(p.get("cuisine", "")).strip() for p in all_prefs if str(p.get("cuisine", "")).strip()][:3]
     if business_context:
@@ -1624,6 +1648,19 @@ def _compute_room_recommendations(room_id: str) -> Dict[str, Any]:
             f"Cuisine: {cuisine_label}. Average budget: ${budget:.0f} per person."
         )
 
+    participant_keys = summary.get("keys", []) or [f"P{i + 1}" for i in range(len(loc_objs))]
+    map_geometry = _build_map_geometry(
+        participants=[
+            {"lat": l.lat, "lon": l.lon,
+             "label": _role_label(participant_keys[i]) if i < len(participant_keys) else f"Person {i + 1}"}
+            for i, l in enumerate(loc_objs)
+        ],
+        region_polys=region_polys,
+        intersection_poly=intersection,
+        center=center,
+        area_mode=area_mode,
+    )
+
     return {
         "status": "ok",
         "summary": summary,
@@ -1639,11 +1676,12 @@ def _compute_room_recommendations(room_id: str) -> Dict[str, Any]:
         },
         "recommendation_text": recommendation_text,
         "recommendations": candidates[:5],
+        "map_geometry": map_geometry,
     }
 
 
 def _compute_direct_recommendations() -> Dict[str, Any]:
-    # 合并饮食禁忌
+    # Merge dietary restrictions (preset choices + free-text custom field).
     def _collect_dietary_restrictions(prefs):
         restrictions = set(prefs.get("dietary_restrictions", []) or [])
         custom = prefs.get("dietary_restrictions_custom", "").strip()
@@ -1653,20 +1691,21 @@ def _compute_direct_recommendations() -> Dict[str, Any]:
                     restrictions.add(part)
         return {r.lower() for r in restrictions if r}
 
-    # 定义简单的食物关键词映射
+    # Keyword map: restriction -> food terms that would violate it (matched
+    # against venue name/category text). Keys are the lowercased option labels.
     RESTRICTION_KEYWORDS = {
-        "不吃猪肉": ["猪肉", "pork", "回锅肉", "红烧肉", "叉烧", "腊肉", "bacon", "ham"],
-        "不吃牛肉": ["牛肉", "beef", "牛排", "牛腩", "brisket", "steak"],
-        "清真": ["猪肉", "pork", "酒精", "alcohol", "ham", "bacon"],
-        "犹太洁食": ["猪肉", "pork", "贝类", "shellfish", "虾", "蟹", "lobster", "bacon", "ham"],
-        "素食": ["肉", "鸡", "牛", "猪", "羊", "鱼", "虾", "蟹", "beef", "pork", "chicken", "lamb", "fish", "shrimp", "crab"],
-        "纯素": ["蛋", "奶", "cheese", "milk", "butter", "yogurt"] + ["肉", "鸡", "牛", "猪", "羊", "鱼", "虾", "蟹", "beef", "pork", "chicken", "lamb", "fish", "shrimp", "crab"],
-        "无海鲜": ["鱼", "虾", "蟹", "贝", "海鲜", "seafood", "fish", "shrimp", "crab", "lobster", "clam", "oyster"],
-        "无坚果": ["坚果", "花生", "核桃", "杏仁", "腰果", "nut", "peanut", "walnut", "almond", "cashew"],
+        "no pork": ["pork", "bacon", "ham", "char siu"],
+        "no beef": ["beef", "brisket", "steak"],
+        "halal": ["pork", "alcohol", "ham", "bacon"],
+        "kosher": ["pork", "shellfish", "lobster", "bacon", "ham"],
+        "vegetarian": ["beef", "pork", "chicken", "lamb", "fish", "shrimp", "crab", "meat"],
+        "vegan": ["cheese", "milk", "butter", "yogurt", "egg", "beef", "pork", "chicken", "lamb", "fish", "shrimp", "crab", "meat"],
+        "no seafood": ["seafood", "fish", "shrimp", "crab", "lobster", "clam", "oyster"],
+        "no nuts": ["nut", "peanut", "walnut", "almond", "cashew"],
     }
 
     def _is_venue_violating_restriction(venue, restrictions):
-        # 检查餐厅名、类型、菜系等是否包含禁忌关键词
+        # Check whether the venue name/type/cuisine contains restricted keywords
         text = (getattr(venue, "name", "") or "") + " " + (getattr(venue, "place_name", "") or "")
         text = text.lower()
         for r in restrictions:
@@ -1675,7 +1714,7 @@ def _compute_direct_recommendations() -> Dict[str, Any]:
                     for kw in keywords:
                         if kw in text:
                             return True
-            # 直接用自定义禁忌词模糊匹配
+            # Fuzzy-match the custom restriction term directly
             if r and r in text:
                 return True
         return False
@@ -1697,40 +1736,52 @@ def _compute_direct_recommendations() -> Dict[str, Any]:
     all_restrictions = restrictions_a.union(restrictions_b)
 
     transport = _preferred_engine_transport(prefs_a.get("travel_mode"), prefs_b.get("travel_mode"))
-    openai_key, model_name, openai_base = _load_llm_settings()
-    engine = MeetHalfwayRecommender(
-        mapbox_token=os.getenv("MAPBOX_ACCESS_TOKEN", "").strip(),
-        ors_api_key=os.getenv("OPENROUTESERVICE_API_KEY", "").strip() or None,
-        yelp_api_key=os.getenv("YELP_API_KEY", "").strip() or None,
-        tavily_key=os.getenv("TAVILY_API_KEY", "").strip(),
-        openai_key=openai_key,
-        openai_model=model_name,
-        openai_base=openai_base,
-        transport=transport,
-        isochrone_minutes=20,
-        use_yelp=True,
-        use_llm_extraction=bool(openai_key),
-        use_llm_summary=bool(openai_key),
-        low_cost_mode=True,
-    )
+    engine = build_engine_from_env(transport=transport, use_yelp=True)
 
-    area_resolution = _resolve_search_area_with_radius_negotiation(engine, loc_a, loc_b, prefs_a, prefs_b)
-    search_area = area_resolution["search_area"]
-    radius_negotiation = area_resolution["detail"]
-    if radius_negotiation.get("too_far"):
-        return {
-            "status": "too_far_for_recommendation",
-            "summary": summary,
-            "recommendation_meta": _build_recommendation_meta(
-                str(search_area.get("mode") or "unknown"),
-                [],
-                prefs_a,
-                prefs_b,
-                radius_negotiation=radius_negotiation,
-            ),
+    # Primary feasibility mechanism (paper §3.1): real per-user travel-time
+    # isochrones, with each person's time budget derived from their distance
+    # tolerance + travel mode. Falls back to radius-tolerance negotiation when
+    # the isochrones don't overlap or ORS is unavailable.
+    mode_a = normalize_transport_mode(prefs_a.get("travel_mode"))
+    mode_b = normalize_transport_mode(prefs_b.get("travel_mode"))
+    minutes_a = max(5, int(round(_distance_miles_to_minutes(prefs_a.get("distance_miles", 15), prefs_a.get("travel_mode")))))
+    minutes_b = max(5, int(round(_distance_miles_to_minutes(prefs_b.get("distance_miles", 15), prefs_b.get("travel_mode")))))
+    iso_area = engine.get_isochrone_search_area(
+        loc_a, loc_b, minutes_a=minutes_a, minutes_b=minutes_b, transport_a=mode_a, transport_b=mode_b,
+    )
+    iso_a_poly = iso_b_poly = None
+    if iso_area.get("overlap_exists") and iso_area.get("geometry") is not None:
+        # Real isochrones overlap → use them for selection and visualization.
+        intersection = iso_area["geometry"]
+        area_mode = "isochrone"
+        iso_a_poly, iso_b_poly = iso_area.get("iso_a"), iso_area.get("iso_b")
+        radius_negotiation = {
+            "distance_km": round(engine.haversine_km(loc_a, loc_b), 2),
+            "negotiation_applied": False,
+            "too_far": False,
+            "mode": "isochrone",
+            "isochrone_minutes_a": minutes_a,
+            "isochrone_minutes_b": minutes_b,
         }
-    intersection = search_area.get("geometry")
-    area_mode = str(search_area.get("mode") or "unknown")
+    else:
+        # Isochrones did not overlap (or ORS down) → radius-tolerance negotiation.
+        area_resolution = _resolve_search_area_with_radius_negotiation(engine, loc_a, loc_b, prefs_a, prefs_b)
+        search_area = area_resolution["search_area"]
+        radius_negotiation = area_resolution["detail"]
+        if radius_negotiation.get("too_far"):
+            return {
+                "status": "too_far_for_recommendation",
+                "summary": summary,
+                "recommendation_meta": _build_recommendation_meta(
+                    str(search_area.get("mode") or "unknown"),
+                    [],
+                    prefs_a,
+                    prefs_b,
+                    radius_negotiation=radius_negotiation,
+                ),
+            }
+        intersection = search_area.get("geometry")
+        area_mode = str(search_area.get("mode") or "unknown")
 
     cuisine_plan = _build_cuisine_keyword_plan(prefs_a, prefs_b)
     venue_types = _combine_venue_preferences(prefs_a, prefs_b)
@@ -1749,12 +1800,12 @@ def _compute_direct_recommendations() -> Dict[str, Any]:
             dedupe[(item.name.lower(), round(item.lat, 4), round(item.lon, 4))] = item
 
     candidates = list(dedupe.values())
-    # 饮食禁忌过滤
+    # Dietary restriction filter
     if all_restrictions:
         filtered_candidates = [c for c in candidates if not _is_venue_violating_restriction(c, all_restrictions)]
         if filtered_candidates:
             candidates = filtered_candidates
-        # else: 保留原始候选但提示
+        # else: keep original candidates but warn
     if not candidates:
         return {"status": "no_candidates", "summary": summary, "dietary_filtered": True}
 
@@ -1863,6 +1914,27 @@ def _compute_direct_recommendations() -> Dict[str, Any]:
         )
     recommendation_meta["meeting_mode"] = _meeting_mode_label(business_context, shopping_context)
 
+    # —— Map geometry: each person's reachable region + shared overlap ——
+    # Prefer the real isochrone polygons; otherwise draw the radius circles.
+    if iso_a_poly is not None and iso_b_poly is not None:
+        region_polys = [iso_a_poly, iso_b_poly]
+    else:
+        eff_radius_a = float(radius_negotiation.get("base_radius_a_km", 0.0)) + float(radius_negotiation.get("extra_a_km", 0.0))
+        eff_radius_b = float(radius_negotiation.get("base_radius_b_km", 0.0)) + float(radius_negotiation.get("extra_b_km", 0.0))
+        circle_a = engine.get_distance_circle(loc_a, eff_radius_a) if eff_radius_a > 0 else None
+        circle_b = engine.get_distance_circle(loc_b, eff_radius_b) if eff_radius_b > 0 else None
+        region_polys = [circle_a, circle_b]
+    map_geometry = _build_map_geometry(
+        participants=[
+            {"lat": loc_a.lat, "lon": loc_a.lon, "label": "Person A"},
+            {"lat": loc_b.lat, "lon": loc_b.lon, "label": "Person B"},
+        ],
+        region_polys=region_polys,
+        intersection_poly=intersection,
+        center=center,
+        area_mode=area_mode,
+    )
+
     return {
         "status": "ok",
         "summary": summary,
@@ -1872,14 +1944,165 @@ def _compute_direct_recommendations() -> Dict[str, Any]:
         "recommendation_meta": recommendation_meta,
         "recommendation_text": recommendation_text,
         "recommendations": scored[:5],
+        "map_geometry": map_geometry,
     }
+
+
+# ============================================================================
+# Result map — visualize each side's reachable area and the shared region (paper contribution #1)
+# ============================================================================
+
+# Colors for each participant's reachable region (matched to marker colors)
+_REGION_COLORS = ["#2563eb", "#dc2626", "#16a34a", "#9333ea", "#ea580c"]
+_PARTICIPANT_ICON_COLORS = ["blue", "red", "green", "purple", "orange"]
+
+
+def _geom_to_geojson(geom: Any) -> Optional[dict]:
+    """Shapely geometry -> GeoJSON dict (JSON-serializable). Returns None on failure/empty."""
+    if geom is None:
+        return None
+    try:
+        from shapely.geometry import mapping  # noqa: PLC0415
+        if getattr(geom, "is_empty", False):
+            return None
+        return mapping(geom)
+    except Exception:
+        return None
+
+
+def _build_map_geometry(
+    participants: list[Dict[str, Any]],
+    region_polys: list,
+    intersection_poly: Any,
+    center: Any,
+    area_mode: str,
+) -> Dict[str, Any]:
+    """Pack reachability geometry into a JSON-serializable structure for _render_result_map."""
+    regions = []
+    for p, poly in zip(participants, region_polys):
+        gj = _geom_to_geojson(poly)
+        if gj:
+            regions.append({"label": p.get("label", ""), "geojson": gj})
+    if isinstance(center, dict):
+        clat, clon = center.get("lat"), center.get("lon")
+    else:
+        clat, clon = getattr(center, "lat", None), getattr(center, "lon", None)
+    return {
+        "participants": participants,
+        "regions": regions,
+        "intersection": _geom_to_geojson(intersection_poly),
+        "center": {"lat": clat, "lon": clon},
+        "area_mode": area_mode,
+    }
+
+
+def _render_result_map(geometry: Optional[Dict[str, Any]], candidates: list[Dict[str, Any]], *, key: str = "result_map") -> None:
+    """Render the result map: each participant's reachable area + shared overlap + fair center + ranked venues.
+
+    Visualizes paper contribution #1 (spatial fairness via isochrone/radius reachable-area intersection).
+    """
+    if not geometry or not isinstance(geometry, dict):
+        return
+    center = geometry.get("center") or {}
+    clat, clon = center.get("lat"), center.get("lon")
+    if clat is None or clon is None:
+        return
+
+    fmap = folium.Map(location=[clat, clon], zoom_start=13, tiles="cartodbpositron", control_scale=True)
+
+    # 1) each participant's reachable area (dashed outline, low-opacity fill)
+    for i, region in enumerate(geometry.get("regions", []) or []):
+        gj = region.get("geojson")
+        if not gj:
+            continue
+        color = _REGION_COLORS[i % len(_REGION_COLORS)]
+        folium.GeoJson(
+            gj,
+            style_function=(lambda col: (lambda _f: {
+                "fillColor": col, "color": col, "weight": 2,
+                "fillOpacity": 0.08, "dashArray": "4,4",
+            }))(color),
+            tooltip=f"{region.get('label', '')} · reachable range",
+        ).add_to(fmap)
+
+    # 2) shared intersection (emphasized fill); amber + note when in union fallback
+    inter = geometry.get("intersection")
+    is_union = geometry.get("area_mode") == "union_fallback"
+    if inter:
+        fill = "#f59e0b" if is_union else "#10b981"
+        label = ("Combined area (no overlap — relaxed mode)"
+                 if is_union else "Shared reachable area — both can reach")
+        folium.GeoJson(
+            inter,
+            style_function=(lambda col: (lambda _f: {
+                "fillColor": col, "color": col, "weight": 3, "fillOpacity": 0.30,
+            }))(fill),
+            tooltip=label,
+        ).add_to(fmap)
+
+    # 3) participant start points
+    for i, p in enumerate(geometry.get("participants", []) or []):
+        if p.get("lat") is None or p.get("lon") is None:
+            continue
+        icon_color = _PARTICIPANT_ICON_COLORS[i % len(_PARTICIPANT_ICON_COLORS)]
+        folium.Marker(
+            [p["lat"], p["lon"]],
+            tooltip=f"{p.get('label', f'P{i + 1}')} · start",
+            icon=folium.Icon(color=icon_color, icon="user", prefix="fa"),
+        ).add_to(fmap)
+
+    # 4) fair center
+    folium.Marker(
+        [clat, clon],
+        tooltip="Fair meeting center",
+        icon=folium.Icon(color="purple", icon="star", prefix="fa"),
+    ).add_to(fmap)
+
+    # 5) ranked candidate venues
+    for idx, c in enumerate(candidates or []):
+        lat, lon = c.get("lat"), c.get("lon")
+        if lat is None or lon is None:
+            continue
+        inside = bool(c.get("in_isochrone_intersection"))
+        rank_color = "green" if idx < 3 else "lightgray"
+        badge = "✓ inside shared area" if inside else "△ edge of area"
+        status = str(c.get("venue_status", "") or "")
+        sample_note = "<br><b>⚠ offline sample</b>" if c.get("is_sample") else ""
+        popup_html = (
+            f"<b>#{idx + 1} {html.escape(str(c.get('name', '')))}</b><br>"
+            f"score {float(c.get('final_score', 0)):.2f} · "
+            f"Δ{float(c.get('fairness_delta_minutes', 0)):.0f} min<br>"
+            f"{badge} · status: {status}{sample_note}"
+        )
+        folium.Marker(
+            [lat, lon],
+            popup=folium.Popup(popup_html, max_width=240),
+            tooltip=f"#{idx + 1} {c.get('name', '')}",
+            icon=folium.Icon(color=rank_color, icon="cutlery", prefix="fa"),
+        ).add_to(fmap)
+
+    # returned_objects=[] -> map interactions don't trigger a Streamlit rerun (avoid recompute on every click)
+    st_folium(fmap, width=None, height=460, key=key, use_container_width=True, returned_objects=[])
+
+    total = len(candidates or [])
+    n_inside = sum(1 for c in (candidates or []) if c.get("in_isochrone_intersection"))
+    legend = (
+        "🔵/🔴 each person's reachable range &nbsp;·&nbsp; "
+        f"{'🟠 combined (relaxed)' if is_union else '🟢 shared area (both reach)'} &nbsp;·&nbsp; "
+        "⭐ fair center &nbsp;·&nbsp; 📍 ranked venues"
+    )
+    st.caption(legend)
+    if total:
+        st.caption(f"{n_inside}/{total} recommended venues fall inside the shared reachable area.")
+    if any(c.get("is_sample") for c in (candidates or [])):
+        st.caption("⚠ Some venues use **offline sample data** because live map/POI services were unavailable.")
 
 
 # ============================================================================
 # Candidate serialisation & UI helpers (used by check_result + vote pages)
 # ============================================================================
 
-_AMBIANCE_LABEL = {"quiet": "安静舒缓", "balanced": "氛围均衡", "lively": "热闹活跃"}
+_AMBIANCE_LABEL = {"quiet": "quiet & relaxed", "balanced": "balanced vibe", "lively": "lively"}
 
 
 def _attach_parking_recommendations(
@@ -1930,49 +2153,49 @@ def _build_recommendation_reason(c: Any, summary: Dict[str, Any]) -> str:
     severe_time_gap = bool(getattr(c, "severe_time_gap", False))
 
     if fairness < 3:
-        parts.append("双方通勤时间几乎一致")
+        parts.append("commute times are nearly identical for both")
     elif fairness < 8:
-        parts.append(f"双方通勤时间差约 {fairness:.0f} 分钟")
+        parts.append(f"commute times differ by about {fairness:.0f} min")
 
     if in_iso:
-        parts.append("位于双方都能接受的可达区域内")
+        parts.append("inside the area both can reasonably reach")
     elif search_area_mode == "union_fallback":
-        parts.append("由于双方通勤范围没有重叠，因此从合并可达区域中选出")
+        parts.append("ranges didn't overlap, so picked from the combined reachable area")
 
     if rating >= 0.75:
-        parts.append(f"综合口碑较高（{rating:.2f}）")
+        parts.append(f"strong overall reputation ({rating:.2f})")
     elif rating >= 0.55:
-        parts.append(f"综合口碑稳定（{rating:.2f}）")
+        parts.append(f"steady overall reputation ({rating:.2f})")
 
     if time_conflict:
-        parts.append("目前还没有共同可用时段")
+        parts.append("no shared availability yet")
         if severe_time_gap and closest_gap > 0:
-            parts.append(f"最接近的可约时间仍相差约 {closest_gap:.0f} 分钟")
+            parts.append(f"closest mutual times still differ by ~{closest_gap:.0f} min")
     elif best_time:
-        parts.append(f"建议到店时间：{best_time}")
+        parts.append(f"suggested arrival time: {best_time}")
 
     ambiance_fit = float(bd.get("ambiance_fit", 0))
     pref_a = summary.get("prefs_a", {}).get("ambiance_preference", "balanced")
     pref_b = summary.get("prefs_b", {}).get("ambiance_preference", "balanced")
     if ambiance_fit >= 0.75:
-        parts.append(f"氛围贴合双方偏好（{_AMBIANCE_LABEL.get(pref_a, pref_a)} / {_AMBIANCE_LABEL.get(pref_b, pref_b)}）")
+        parts.append(f"vibe matches both preferences ({_AMBIANCE_LABEL.get(pref_a, pref_a)} / {_AMBIANCE_LABEL.get(pref_b, pref_b)})")
 
     business_fit = float(bd.get("business_fit", 0))
     if business_fit >= 0.65:
-        parts.append("适合商务会谈：环境更安静、场所更中立，并考虑到停车/到达便利")
+        parts.append("good for business meetings: quieter, more neutral, with parking/arrival in mind")
 
     if getattr(c, "venue_category", "") in {"mall", "clothing", "department_store"}:
-        parts.append("适合购物/逛商场场景，可作为非吃饭目的地")
+        parts.append("fits a shopping outing as a non-dining destination")
 
     web_title = (getattr(c, "web_signals", {}) or {}).get("title", "")
     if web_title and len(web_title) < 80:
-        parts.append(f'网页线索："{web_title}"')
+        parts.append(f'web cue: "{web_title}"')
 
     venue_status = str((getattr(c, "web_signals", {}) or {}).get("status", "uncertain")).lower()
     if venue_status == "uncertain":
-        parts.append("营业状态仍需二次确认")
+        parts.append("opening status needs a second check")
 
-    return "；".join(parts) if parts else "综合评分表现较强"
+    return "; ".join(parts) if parts else "strong overall score"
 
 
 def _serialise_candidates_for_vote(
@@ -2004,6 +2227,16 @@ def _serialise_candidates_for_vote(
             "web_title": ws.get("title", ""),
             "parking_recommendations": list(getattr(c, "parking_recommendations", []) or []),
             "recommendation_reason": _build_recommendation_reason(c, summary),
+            # —— data source & offline-sample labeling (honest display) ——
+            "is_sample": bool(getattr(c, "is_sample", False)),
+            "data_source": str(getattr(c, "data_source", "") or ""),
+            # —— live signals from LLM/keyword extraction (for card display) ——
+            "queue_level": str(ws.get("queue_level", "unknown")),
+            "estimated_wait_minutes": round(float(ws.get("estimated_wait_minutes", 0) or 0), 1),
+            "promo_bonus": round(float(ws.get("promo_bonus", 0) or 0), 3),
+            "risk_penalty": round(float(ws.get("risk_penalty", 0) or 0), 3),
+            "web_confidence": str(ws.get("confidence", "")),
+            "web_reason": str(ws.get("reason", "")),
         })
     return result
 
@@ -2024,107 +2257,108 @@ def _render_saved_parking_options(candidate: Dict[str, Any]) -> None:
             st.caption(f"- {name} ({distance_m} m)")
 
 
+# Friendly labels for whatever score-breakdown keys a flow emits (direct vs room
+# scoring produce different key sets — render generically rather than hard-coding).
+_SCORE_BREAKDOWN_LABELS = {
+    "distance": "Central",
+    "rating": "Reputation",
+    "fairness": "Time fairness",
+    "group_fairness": "Group fairness",
+    "radius_tolerance": "Within radius",
+    "availability_overlap": "Time overlap",
+    "venue_popularity": "Popularity",
+    "mutual_vote": "Mutual votes",
+    "time_vote": "Time votes",
+    "crowd": "Not crowded",
+    "ambiance_fit": "Ambiance fit",
+}
+_QUEUE_LABEL = {"low": "Low", "medium": "Medium", "high": "High", "unknown": "Unknown"}
+_STATUS_LABEL = {"open": "🟢 Open", "closed": "🔴 Closed", "uncertain": "🟡 Uncertain"}
+
+
 def _render_candidate_cards(candidates: list[Dict[str, Any]]) -> None:
-    """Render venue candidate cards in the UI."""
-    medals = ["#1", "#2", "#3"]
-    from meethalfway import MeetHalfwayRecommender, Location
-    import os
+    """Render venue cards: ranking, fairness, reachability badge, and the
+    LLM/keyword-extracted live signals (status / queue / wait / crowd / promo / risk)."""
+    medals = ["🥇", "🥈", "🥉"]
     for idx, c in enumerate(candidates):
-        medal = medals[idx] if idx < len(medals) else f"#{idx+1}"
+        medal = medals[idx] if idx < len(medals) else f"#{idx + 1}"
+        inside = bool(c.get("in_isochrone_intersection"))
+        if inside:
+            badge = ("<span style='background:#e6f7ee;color:#157347;border-radius:999px;"
+                     "padding:2px 10px;font-size:0.74rem;font-weight:700;'>✓ inside shared area</span>")
+        else:
+            badge = ("<span style='background:#fff4e5;color:#b76e00;border-radius:999px;"
+                     "padding:2px 10px;font-size:0.74rem;font-weight:700;'>△ edge of area</span>")
+        if c.get("is_sample"):
+            badge += ("&nbsp;<span style='background:#fdecea;color:#b42318;border-radius:999px;"
+                      "padding:2px 10px;font-size:0.72rem;font-weight:700;'>⚠ offline sample</span>")
         with st.container():
             st.markdown(
                 f"""
                 <div style="background:rgba(255,255,255,0.90);border:1px solid rgba(75,115,165,0.18);
                 border-radius:18px;padding:15px 20px;margin-bottom:10px;
                 box-shadow:0 6px 18px rgba(40,75,125,0.09);">
-                <span style="font-size:1.15rem;font-weight:800;color:#1a3a5c;">{medal} &nbsp; {c.get('name','')}</span>
-                <br/><span style="color:#4a6a8a;font-size:0.88rem;">{c.get('place_name','')}</span>
+                <span style="font-size:1.15rem;font-weight:800;color:#1a3a5c;">{medal} &nbsp; {html.escape(str(c.get('name', '')))}</span>
+                &nbsp;{badge}
+                <br/><span style="color:#4a6a8a;font-size:0.88rem;">{html.escape(str(c.get('place_name', '')))}</span>
                 </div>
                 """,
                 unsafe_allow_html=True,
             )
             cols = st.columns(4)
-            cols[0].metric("AI 评分", f"{float(c.get('final_score', 0)):.2f}")
-            cols[1].metric("公平性差值", f"{float(c.get('fairness_delta_minutes', 0)):.1f} 分钟")
-            cols[2].metric("口碑代理分", f"{float(c.get('rating_proxy', 0)):.2f}")
-            cols[3].metric("拥挤指数", f"{float(c.get('crowd_index', 0.5)):.2f}")
-            status_label = str(c.get("venue_status", "uncertain")).lower()
-            st.caption(f"营业状态检查：{status_label}")
+            cols[0].metric("AI score", f"{float(c.get('final_score', 0)):.2f}")
+            cols[1].metric("Fairness gap", f"{float(c.get('fairness_delta_minutes', 0)):.0f} min")
+            cols[2].metric("Reputation", f"{float(c.get('rating_proxy', 0)):.2f}")
+            cols[3].metric("Crowd index", f"{float(c.get('crowd_index', 0.5)):.2f}")
+
+            # --- Live venue signals (semantic extraction) ---
+            status = str(c.get("venue_status", "uncertain")).lower()
+            queue = _QUEUE_LABEL.get(str(c.get("queue_level", "unknown")).lower(), "Unknown")
+            wait = float(c.get("estimated_wait_minutes", 0) or 0)
+            promo = float(c.get("promo_bonus", 0) or 0)
+            risk = float(c.get("risk_penalty", 0) or 0)
+            conf = str(c.get("web_confidence", "") or "")
+            chips = [f"Status {_STATUS_LABEL.get(status, '🟡 Uncertain')}", f"Queue {queue}"]
+            if wait > 0:
+                chips.append(f"~{wait:.0f} min wait")
+            if promo > 0:
+                chips.append("🎁 promo")
+            if risk > 0.3:
+                chips.append("⚠ risk")
+            if conf:
+                chips.append(f"confidence {conf}")
+            st.caption("Live signals · " + "  ·  ".join(chips))
+            wreason = str(c.get("web_reason", "") or "")
+            if wreason and wreason not in ("keyword_fallback", "not_enriched"):
+                st.caption(f"Evidence: {wreason}")
+
             reason = c.get("recommendation_reason", "")
             if reason:
-                st.caption(f"推荐理由：{reason}")
+                st.caption(f"Why recommended: {reason}")
+
             if c.get("time_conflict"):
-                st.caption("建议到店时间：目前还没有共同可用时段")
+                st.caption("Suggested time: no shared availability yet")
                 if c.get("severe_time_gap"):
                     st.caption(
-                        f"时间提醒：双方最接近的可约时间仍相差约 {float(c.get('closest_time_gap_minutes', 0)):.0f} 分钟，建议手动协商。"
+                        f"Heads up: the closest mutual times still differ by ~{float(c.get('closest_time_gap_minutes', 0)):.0f} min — negotiate manually."
                     )
             elif c.get("best_time_slot"):
-                st.caption(f"建议到店时间：{c['best_time_slot']}")
+                st.caption(f"Suggested time: {c['best_time_slot']}")
             if c.get("search_area_mode") == "union_fallback":
-                st.caption("可达性说明：由于双方通勤范围没有重叠，这个地点来自合并可达区域。")
-            bd = c.get("score_breakdown", {})
-            if bd:
-                st.caption(
-                    "评分拆解："
-                    f"距离 {bd.get('distance', bd.get('dist', 0)):.2f}  "
-                    f"| 口碑 {bd.get('rating', 0):.2f}  "
-                    f"| 时间重叠 {bd.get('availability_overlap', 0):.2f}  "
-                    f"| 氛围匹配 {bd.get('ambiance_fit', 0):.2f}"
-                )
+                st.caption("Reachability note: the two ranges didn't overlap, so this venue comes from the combined area.")
 
-            # --- Nearby Parking Lots ---
-            if c.get("parking_recommendations"):
-                _render_saved_parking_options(c)
-                continue
-            try:
-                # Only run if lat/lon present
-                lat = c.get("lat")
-                lon = c.get("lon")
-                if lat is not None and lon is not None:
-                    st.markdown("<div style='margin-top:8px;'><b>🚗 Nearby Parking:</b></div>", unsafe_allow_html=True)
-                    # Use a small radius for parking search
-                    mapbox_token = os.getenv("MAPBOX_ACCESS_TOKEN", "").strip()
-                    ors_key = os.getenv("OPENROUTESERVICE_API_KEY", "").strip() or None
-                    yelp_key = os.getenv("YELP_API_KEY", "").strip() or None
-                    tavily_key = os.getenv("TAVILY_API_KEY", "").strip()
-                    openai_key = os.getenv("OPENAI_API_KEY", "").strip() or None
-                    model_name = os.getenv("MODEL_NAME", os.getenv("OPENAI_MODEL", "gpt-4o-mini")).strip()
-                    openai_base = os.getenv("OPENAI_API_BASE", "").strip() or None
-                    engine = MeetHalfwayRecommender(
-                        mapbox_token=mapbox_token,
-                        ors_api_key=ors_key,
-                        yelp_api_key=yelp_key,
-                        tavily_key=tavily_key,
-                        openai_key=openai_key,
-                        openai_model=model_name,
-                        openai_base=openai_base,
-                        transport="drive",
-                        low_cost_mode=True,
-                        use_yelp=False,
-                        use_llm_extraction=False,
-                        use_llm_summary=False,
-                        max_enriched_candidates=0,
-                    )
-                    venue_loc = Location(float(lat), float(lon))
-                    # Search for parking lots within 400m (approx 0.25 miles)
-                    parking_lots = engine.search_nearby_venues(
-                        center=venue_loc,
-                        venue_type="parking",
-                        keyword="",
-                        limit=4,
-                        intersection=None,
-                    )
-                    if parking_lots:
-                        for p in parking_lots:
-                            dist_km = engine.haversine_km(venue_loc, Location(p.lat, p.lon))
-                            dist_m = int(dist_km * 1000)
-                            maps_url = f"https://www.google.com/maps/search/?api=1&query={p.lat},{p.lon}"
-                            st.markdown(f"- <a href='{maps_url}' target='_blank'>{p.name}</a> ({dist_m} m)", unsafe_allow_html=True)
-                    else:
-                        st.caption("No parking lots found nearby.")
-            except Exception as e:
-                st.caption(f"[Parking search error: {e}]")
+            # Score breakdown — render whatever components this flow produced.
+            bd = c.get("score_breakdown", {}) or {}
+            parts = [
+                f"{_SCORE_BREAKDOWN_LABELS.get(k, k)} {float(v):.2f}"
+                for k, v in bd.items()
+                if isinstance(v, (int, float)) and k not in ("closest_time_gap_minutes", "severe_time_gap")
+            ]
+            if parts:
+                st.caption("Score breakdown · " + "  ·  ".join(parts))
+
+            # Nearby parking (precomputed in the recommendation step — no per-card live search).
+            _render_saved_parking_options(c)
 
 
 def _render_vote_button(room_id: str) -> None:
@@ -3653,6 +3887,8 @@ def render_check_result_page():
             # Already have a vote-ready candidate list saved
             st.markdown("### Recommended Venues")
             _render_recommendation_warnings(rec_cached.get("recommendation_meta", {}))
+            st.markdown("#### 🗺️ Shared reachable area & ranked venues")
+            _render_result_map(rec_cached.get("map_geometry"), rec_cached["candidates"], key=f"result_map_{room_id}")
             _render_recommendation_summary(rec_cached.get("recommendation_text", ""))
             _render_candidate_cards(rec_cached["candidates"])
             _render_vote_button(room_id)
@@ -3662,7 +3898,6 @@ def render_check_result_page():
             # Serialise to dicts and generate reasons, save for vote page
             candidate_dicts = _serialise_candidates_for_vote(scored, recommendation_state.get("summary", {}))
             _render_recommendation_warnings(recommendation_state.get("recommendation_meta", {}))
-            _render_recommendation_summary(recommendation_state.get("recommendation_text", ""))
             _save_room_recommendation(room_id, {
                 "status": "ready",
                 "generated_at": _utc_timestamp(),
@@ -3670,7 +3905,11 @@ def render_check_result_page():
                 "candidates": candidate_dicts,
                 "recommendation_meta": recommendation_state.get("recommendation_meta", {}),
                 "recommendation_text": recommendation_state.get("recommendation_text", ""),
+                "map_geometry": recommendation_state.get("map_geometry"),
             })
+            st.markdown("#### 🗺️ Shared reachable area & ranked venues")
+            _render_result_map(recommendation_state.get("map_geometry"), candidate_dicts, key=f"result_map_{room_id}")
+            _render_recommendation_summary(recommendation_state.get("recommendation_text", ""))
             _render_candidate_cards(candidate_dicts)
             _render_vote_button(room_id)
         elif recommendation_state["status"] == "no_candidates":
@@ -3725,29 +3964,30 @@ def render_dual_preferences_page():
             placeholder="sushi, brunch, clothes, Nike shoes, suit, Plaza mall...",
         )
 
-        # 新增：饮食禁忌/宗教饮食选项
+        # Dietary / religious restrictions
         DIETARY_RESTRICTIONS_OPTIONS = [
-            "不吃猪肉 (No Pork)",
-            "不吃牛肉 (No Beef)",
-            "清真 (Halal)",
-            "犹太洁食 (Kosher)",
-            "素食 (Vegetarian)",
-            "纯素 (Vegan)",
-            "无海鲜 (No Seafood)",
-            "无坚果 (No Nuts)",
+            "No Pork",
+            "No Beef",
+            "Halal",
+            "Kosher",
+            "Vegetarian",
+            "Vegan",
+            "No Seafood",
+            "No Nuts",
         ]
+        _saved_dietary = [d for d in (defaults.get("dietary_restrictions", []) or []) if d in DIETARY_RESTRICTIONS_OPTIONS]
         dietary_restrictions = st.multiselect(
-            f"饮食禁忌/宗教饮食 - Person {role_key}",
+            f"Dietary / religious restrictions - Person {role_key}",
             options=DIETARY_RESTRICTIONS_OPTIONS,
-            default=defaults.get("dietary_restrictions", []),
+            default=_saved_dietary,
             key=f"direct_dietary_restrictions_{role_key}",
-            help="如有宗教或健康相关饮食禁忌，请选择。"
+            help="Select any religious or health-related dietary restrictions.",
         )
         dietary_restrictions_custom = st.text_input(
-            f"补充其他饮食禁忌（可选） - Person {role_key}",
+            f"Other dietary restrictions (optional) - Person {role_key}",
             value=defaults.get("dietary_restrictions_custom", ""),
             key=f"direct_dietary_restrictions_custom_{role_key}",
-            placeholder="如：不吃羊肉、无麸质、忌辣等"
+            placeholder="e.g. no lamb, gluten-free, no spicy food",
         )
 
         budget = st.slider(
@@ -3836,6 +4076,7 @@ def render_dual_preferences_page():
             )
             st.session_state.direct_recommendation_meta = rec_state.get("recommendation_meta", {})
             st.session_state.direct_recommendation_text = rec_state.get("recommendation_text", "")
+            st.session_state.direct_map_geometry = rec_state.get("map_geometry")
             st.session_state.current_page = "venue_vote"
             st.rerun()
         if rec_state.get("status") == "no_open_candidates":
@@ -3870,6 +4111,8 @@ def render_vote_page():
             st.info("Recommendations are not ready yet. Please complete the dual preference form first.")
             return
 
+        st.markdown("#### 🗺️ Shared reachable area & ranked venues")
+        _render_result_map(st.session_state.get("direct_map_geometry"), candidates, key="result_map_direct")
         _render_recommendation_summary(st.session_state.get("direct_recommendation_text", ""))
         st.subheader("Candidate Venues")
         _render_candidate_cards(candidates)
@@ -3932,49 +4175,10 @@ def render_vote_page():
     st.subheader("Candidate Venues")
     st.caption("Review the 5 candidates below, then rank your Top 3 at the bottom of the page.")
     _render_recommendation_warnings(rec.get("recommendation_meta", {}))
+    st.markdown("#### 🗺️ Shared reachable area & ranked venues")
+    _render_result_map(rec.get("map_geometry"), candidates, key=f"result_map_vote_{role_key}")
     _render_recommendation_summary(rec.get("recommendation_text", ""))
-
-    for idx, c in enumerate(candidates, start=1):
-        with st.container():
-            st.markdown(
-                f"""
-                <div style="background:rgba(255,255,255,0.88);border:1px solid rgba(80,120,160,0.18);
-                border-radius:18px;padding:16px 20px;margin-bottom:12px;
-                box-shadow:0 6px 20px rgba(40,80,130,0.08);">
-                <span style="font-size:1.15rem;font-weight:800;color:#1a3a5c;">#{idx} &nbsp; {c.get('name','')}</span>
-                <br/><span style="color:#4a6a8a;font-size:0.9rem;">{c.get('place_name') or c.get('address','')}</span>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
-            cols = st.columns(4)
-            cols[0].metric("评分", f"{float(c.get('final_score', 0)):.2f}")
-            cols[1].metric("公平性差值", f"{float(c.get('fairness_delta_minutes', 0)):.1f} 分钟")
-            cols[2].metric("口碑代理分", f"{float(c.get('rating_proxy', 0)):.2f}")
-            cols[3].metric("拥挤指数", f"{float(c.get('crowd_index', 0.5)):.2f}")
-            st.caption(f"营业状态检查：{str(c.get('venue_status', 'uncertain')).lower()}")
-            reason = c.get("recommendation_reason", "")
-            if reason:
-                st.caption(f"推荐理由：{reason}")
-            if c.get("time_conflict"):
-                st.caption("建议到店时间：目前还没有共同可用时段")
-                if c.get("severe_time_gap"):
-                    st.caption(
-                        f"时间提醒：双方最接近的可约时间仍相差约 {float(c.get('closest_time_gap_minutes', 0)):.0f} 分钟，建议手动协商。"
-                    )
-            elif c.get("best_time_slot"):
-                st.caption(f"建议到店时间：{c['best_time_slot']}")
-            if c.get("search_area_mode") == "union_fallback":
-                st.caption("可达性说明：由于双方通勤范围没有重叠，这个地点来自合并可达区域。")
-            bd = c.get("score_breakdown", {})
-            if bd:
-                st.caption(
-                    "评分拆解："
-                    f"距离 {bd.get('distance', bd.get('dist', 0)):.2f}  "
-                    f"| 口碑 {bd.get('rating', 0):.2f}  "
-                    f"| 时间重叠 {bd.get('availability_overlap', 0):.2f}  "
-                    f"| 氛围匹配 {bd.get('ambiance_fit', 0):.2f}"
-                )
+    _render_candidate_cards(candidates)
 
     st.divider()
     st.subheader(f"Your Ranking - Person {role_key}")
@@ -4036,7 +4240,7 @@ def render_vote_page():
 # ============================================================================
 def render_final_result_page():
     """Show the AI-merged top-3 shortlist that both people can discuss and book from."""
-    st.header("最终推荐 shortlist")
+    st.header("Final recommendation shortlist")
 
     room_id = st.session_state.get("room_id", "")
     if st.session_state.get("direct_flow_active") and not room_id:
