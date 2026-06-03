@@ -1,12 +1,6 @@
-<div align="right"> 
-
-[English](./README.md) | [中文](./README.zh-CN.md)
-
-</div>
-
 # MeetHalfway 
 
-A fair, real-time, and explainable meeting-place recommendation engine for two people.
+A fair, real-time, and explainable meeting-place recommendation engine for **2–5 people**.
 
 ![Python](https://img.shields.io/badge/Python-3.10+-3776AB?logo=python&logoColor=white)
 ![Streamlit](https://img.shields.io/badge/Streamlit-App-FF4B4B?logo=streamlit&logoColor=white)
@@ -17,37 +11,38 @@ A fair, real-time, and explainable meeting-place recommendation engine for two p
 
 ## Why This Project Stands Out
 
-MeetHalfway AI does more than compute a geometric midpoint. It enforces fairness through isochrone intersection (both users can reasonably reach the area), then combines live status signals, crowding/queue risk, and reputation factors into a practical and explainable recommendation.
+MeetHalfway does more than compute a geometric midpoint. For a group of **two to five** participants, it enforces fairness through **travel-time isochrone intersection** — the shared region everyone can reasonably reach — then combines live status signals, crowding/queue risk, and reputation factors into a practical, explainable recommendation.
 
- not only considers the common factors like "where to meet" and "when to meet," but also incorporates additional criteria such as:  
-- Travel radius tolerance,  
-- Availability overlap,  
-- Venue popularity and density,  
-- Mutual voting preferences.  
+Beyond the usual "where to meet" and "when to meet," it also weighs:
+- Travel radius tolerance,
+- Availability overlap,
+- Venue popularity and density,
+- Mutual voting preferences.
 
 ## Key Highlights
 
-- Fairness by travel time: optimize the balance, not just map distance.
-- Real-world decision quality: detect closures, high queue risk, and busy periods.
-- End-to-end demo readiness: interactive map, ranked recommendations, and surprise mode.
-- Privacy-first workflow: location data is processed in-memory only.
+- **Fairness by travel time:** optimize the balance for everyone, not just map distance.
+- **2–5 participants:** a room-based flow computes the shared reachable area across the whole group, not just a single pair.
+- **Real-world decision quality:** detect closures, high queue risk, and busy periods from live web signals.
+- **Always-on demo:** interactive map, ranked recommendations, surprise mode, and a clearly-labeled offline fallback when live services are unavailable.
+- **Privacy-first workflow:** locations are processed in memory only and can be submitted separately by each participant.
 
 ## Core Capabilities
 
 | Module | Design | Value |
 |---|---|---|
-| Geo Fairness Constraint | Isochrone intersection | Keeps candidates reachable for both sides |
-| Intelligent Scoring | Fairness + rating + preference + risk penalties | Produces robust recommendations |
-| Live Signals | Web retrieval + semantic extraction | Captures current open/crowd conditions |
-| Engineering Resilience | Async concurrency + retries + fallbacks | Stays available under API instability |
-| Visual Presentation | Streamlit + interactive map | Easy for judges to understand quickly |
+| Geo fairness constraint | Per-user travel-time isochrone intersection (radius-tolerance circles as fallback) | Keeps candidates reachable for everyone (2–5 people) |
+| Intelligent scoring | Fairness + rating + preference + risk/crowd penalties | Robust multi-criteria ranking |
+| Live signals | Web retrieval + LLM/keyword semantic extraction | Captures current open / crowd / queue conditions |
+| Engineering resilience | Async concurrency + retries + multi-source fallbacks + labeled offline sample | Stays usable under API/network instability |
+| Explainable visualization | Streamlit map showing each reachable region, the shared overlap, and ranked venues | Easy for judges to grasp at a glance |
 
 ## Product Flow
 
-1. Collect two locations (address / map click / privacy-separated upload).
-2. Build isochrones and compute overlap area.
-3. Retrieve restaurant candidates and enrich with live signals.
-4. Output explainable scores, top picks, and map visualization.
+1. Create a room for **2–5 people**; each participant submits a location (address / map click / privacy-separated upload) and preferences.
+2. Build each person's travel-time isochrone and compute the shared reachable area (the intersection everyone can reach).
+3. Retrieve venue candidates inside that area and enrich them with live signals.
+4. Output explainable scores, ranked picks, natural-language reasons, and a map showing every reachable region, the shared overlap, and the ranked venues.
 
 ## Tech Stack
 
