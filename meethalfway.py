@@ -1,11 +1,11 @@
 ﻿"""
-MeetHalfway AI — v2.0 (竞赛进化版)
+MeetHalfway AI - v2.0
 
-算法 : 等时线交集 (Mapbox Isochrone API) + 时间公平性指数惩罚
-AI   : GPT-4o-mini 结构化 JSON 语义提取（替代硬编码关键词）
-工程 : asyncio + httpx 并发 · 优雅降级 (Mapbox->OSM / OpenAI->关键词) · logging
-演示 : folium 交互地图 · 惊喜 (Surprise Me) 模式 · 疲劳度参数
-隐私 : 零足迹设计——用户 GPS 仅在内存中计算，函数返回后立即销毁，不做任何持久化。
+Algorithm : isochrone intersection (ORS/Mapbox) + exponential travel-time fairness penalty
+AI        : LLM structured-JSON semantic extraction (with keyword fallback)
+Engineering: asyncio + httpx concurrency, graceful degradation (Mapbox->OSM, LLM->keywords), logging
+Demo      : folium interactive map, Surprise Me mode, fatigue parameter
+Privacy   : zero-footprint design - user GPS is computed in memory only and discarded on return; never persisted.
 """
 
 from __future__ import annotations
@@ -17,8 +17,10 @@ import logging
 import math
 import os
 import random
+import sys
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import httpx
@@ -26,7 +28,7 @@ import requests
 from dotenv import load_dotenv
 
 # ---------------------------------------------------------------------------
-# 可选重型依赖 — 缺失时优雅降级，不中断程序
+# Optional heavy dependencies - degrade gracefully if missing, never crash.
 # ---------------------------------------------------------------------------
 try:
     from shapely.geometry import Point, Polygon, mapping, shape  # type: ignore
@@ -42,30 +44,51 @@ except ImportError:
     HAS_FOLIUM = False
 
 # ---------------------------------------------------------------------------
-# 日志配置
+# Logging configuration
 # ---------------------------------------------------------------------------
 _LOG_FORMAT = "%(asctime)s [%(levelname)s] %(name)s — %(message)s"
 logging.basicConfig(level=logging.INFO, format=_LOG_FORMAT)
 logger = logging.getLogger("meethalfway")
 
 # ---------------------------------------------------------------------------
-# 常量
+# Constants
 # ---------------------------------------------------------------------------
 MAPBOX_GEOCODE_BASE = "https://api.mapbox.com/geocoding/v5/mapbox.places"
 MAPBOX_ISOCHRONE_BASE = "https://api.mapbox.com/isochrone/v1/mapbox"
 ORS_ISOCHRONE_BASE = "https://api.openrouteservice.org/v2/isochrones"
 TAVILY_SEARCH_URL = "https://api.tavily.com/search"
 YELP_SEARCH_URL = "https://api.yelp.com/v3/businesses/search"
-OVERPASS_API_URL = "https://overpass-api.de/api/interpreter"
 
-# Mapbox isochrone profile 映射
+# A descriptive User-Agent is REQUIRED by Nominatim's usage policy and helps
+# avoid WAF blocks (HTTP 406/403) on the public Overpass instances.
+HTTP_USER_AGENT = "MeetHalfwayAI/2.0 (SIGSPATIAL 2026 demo; +https://github.com/Perry-BIS/MeetHalfWay)"
+OSM_HTTP_HEADERS: Dict[str, str] = {
+    "User-Agent": HTTP_USER_AGENT,
+    "Accept": "application/json",
+}
+
+# Public Overpass mirrors, tried in order. The primary endpoint is intermittently
+# rate-limited / regionally blocked (returns 406), so the engine rotates through
+# mirrors before degrading to Nominatim / offline sample data.
+OVERPASS_API_URL = "https://overpass-api.de/api/interpreter"
+OVERPASS_ENDPOINTS: List[str] = [
+    "https://overpass-api.de/api/interpreter",
+    "https://overpass.kumi.systems/api/interpreter",
+    "https://overpass.osm.ch/api/interpreter",
+    "https://maps.mail.ru/osm/tools/overpass/api/interpreter",
+]
+# HTTP statuses worth retrying on a different mirror: rate limit, WAF block,
+# forbidden, and gateway/timeout errors.
+_OVERPASS_RETRYABLE_STATUS = {403, 406, 429, 500, 502, 503, 504}
+
+# Mapbox isochrone profile mapping
 _PROFILE_MAP: Dict[str, str] = {
     "drive": "driving",
     "walk": "walking",
-    "transit": "driving",  # Mapbox 暂不支持公共交通等时线，driving 作为近似
+    "transit": "driving",  # Mapbox has no transit isochrones; driving is used as an approximation
 }
 
-# 估算速度（km/min）
+# Estimated speeds (km/min)
 _SPEED_KM_MIN: Dict[str, float] = {
     "walk": 5.0 / 60,
     "drive": 40.0 / 60,
@@ -118,22 +141,22 @@ def compute_commute_bias_weights(
 
 
 # ---------------------------------------------------------------------------
-# 场所类型 & 场景配置（供 CLI / Streamlit 两端共享）
+# Venue types & scenario config (shared by CLI and Streamlit)
 # ---------------------------------------------------------------------------
 VENUE_TYPES: Dict[str, Dict[str, str]] = {
-    "restaurant":  {"display": "餐厅",         "query": "restaurant",                    "icon": "cutlery"},
-    "cafe":        {"display": "咖啡店",         "query": "cafe coffee",                   "icon": "coffee"},
-    "park":        {"display": "公园",           "query": "park",                          "icon": "tree"},
-    "mall":        {"display": "商场/购物中心",   "query": "shopping mall",                 "icon": "shopping-bag"},
-    "clothing":    {"display": "服装店",         "query": "clothing store fashion apparel", "icon": "shopping-bag"},
-    "department_store": {"display": "百货商店",   "query": "department store",              "icon": "shopping-bag"},
-    "cinema":      {"display": "电影院",         "query": "cinema movie theater",          "icon": "film"},
-    "bar":         {"display": "酒吧/酒馆",       "query": "bar pub lounge",                "icon": "glass"},
-    "bookstore":   {"display": "书店",           "query": "bookstore library",             "icon": "book"},
-    "gas_station": {"display": "加油站/便利店",   "query": "gas station convenience store", "icon": "road"},
-    "sports":      {"display": "运动/健身",       "query": "gym sports center stadium",     "icon": "futbol-o"},
-    "museum":      {"display": "博物馆/展览",     "query": "museum gallery exhibition",     "icon": "university"},
-    "parking":     {"display": "停车场",         "query": "parking parking lot",           "icon": "car"},
+    "restaurant":  {"display": "Restaurant",         "query": "restaurant",                    "icon": "cutlery"},
+    "cafe":        {"display": "Cafe",         "query": "cafe coffee",                   "icon": "coffee"},
+    "park":        {"display": "Park",           "query": "park",                          "icon": "tree"},
+    "mall":        {"display": "Mall",   "query": "shopping mall",                 "icon": "shopping-bag"},
+    "clothing":    {"display": "Clothing store",         "query": "clothing store fashion apparel", "icon": "shopping-bag"},
+    "department_store": {"display": "Department store",   "query": "department store",              "icon": "shopping-bag"},
+    "cinema":      {"display": "Cinema",         "query": "cinema movie theater",          "icon": "film"},
+    "bar":         {"display": "Bar / pub",       "query": "bar pub lounge",                "icon": "glass"},
+    "bookstore":   {"display": "Bookstore",           "query": "bookstore library",             "icon": "book"},
+    "gas_station": {"display": "Gas / convenience",   "query": "gas station convenience store", "icon": "road"},
+    "sports":      {"display": "Sports / gym",       "query": "gym sports center stadium",     "icon": "futbol-o"},
+    "museum":      {"display": "Museum / gallery",     "query": "museum gallery exhibition",     "icon": "university"},
+    "parking":     {"display": "Parking",         "query": "parking parking lot",           "icon": "car"},
 }
 
 _OVERPASS_FILTERS: Dict[str, List[str]] = {
@@ -152,37 +175,74 @@ _OVERPASS_FILTERS: Dict[str, List[str]] = {
     "parking": ['nwr["amenity"="parking"]', 'nwr["amenity"="parking_entrance"]'],
 }
 
-# 场景预设：影响默认隐私模式 & 推荐场所类型排序
+# ---------------------------------------------------------------------------
+# Offline demo sample data (Riverside, CA - matches the paper's demo scenario)
+# ---------------------------------------------------------------------------
+# Final fallback when Mapbox / Overpass / Nominatim are all unavailable (venue network
+# instability, dead key, regional blocking) so the demo always has results to show. These are
+# approximate coords of real Riverside venues, but status/queue/crowd are illustrative estimates; the UI marks is_sample=True and never passes them off as live data.
+_RIVERSIDE_DOWNTOWN = (33.9806, -117.3755)
+# Fields: (name, lat, lon, rating_proxy, status, queue_level, crowd_index, wait_min)
+_OFFLINE_SAMPLE_VENUES: Dict[str, List[Tuple[str, float, float, float, str, str, float, float]]] = {
+    "restaurant": [
+        ("The Old Spaghetti Factory", 33.98103, -117.37402, 0.78, "open", "medium", 0.62, 15.0),
+        ("Mario's Place",             33.98052, -117.37448, 0.86, "open", "low",    0.45, 5.0),
+        ("ProAbition Kitchen",        33.98089, -117.37381, 0.82, "open", "high",   0.78, 30.0),
+        ("Tio's Tacos",              33.98170, -117.36862, 0.80, "open", "medium", 0.58, 12.0),
+        ("Simple Simon's Bakery",     33.98121, -117.37479, 0.84, "open", "low",    0.40, 4.0),
+        ("Las Campanas (Mission Inn)",33.98158, -117.37531, 0.81, "open", "medium", 0.55, 18.0),
+        ("W. Wolfskill",              33.98061, -117.37419, 0.79, "uncertain", "low", 0.42, 6.0),
+        ("The Salted Pig",            33.98074, -117.37402, 0.83, "open", "high",   0.74, 25.0),
+    ],
+    "cafe": [
+        ("Augie's Coffee House",      33.98079, -117.37441, 0.85, "open", "medium", 0.60, 8.0),
+        ("Back to the Grind",         33.98019, -117.37362, 0.80, "open", "low",    0.44, 5.0),
+        ("Molino's Coffee",           33.97901, -117.37603, 0.77, "open", "low",    0.38, 3.0),
+        ("Arcade Coffee Roasters",    33.97004, -117.39002, 0.82, "open", "medium", 0.52, 7.0),
+    ],
+    "bar": [
+        ("ProAbition Gilded Age",     33.98091, -117.37383, 0.84, "open", "high",   0.80, 30.0),
+        ("Brickwood",                 33.98104, -117.37461, 0.78, "open", "medium", 0.60, 15.0),
+        ("Lake Alice Trading Co.",    33.98142, -117.37489, 0.76, "open", "medium", 0.58, 12.0),
+    ],
+    "park": [
+        ("White Park",                33.97604, -117.37004, 0.74, "open", "low",    0.30, 0.0),
+        ("Fairmount Park",            33.99304, -117.38205, 0.79, "open", "low",    0.28, 0.0),
+        ("Mount Rubidoux Park",       33.98701, -117.39605, 0.83, "open", "medium", 0.40, 0.0),
+    ],
+}
+
+# Scenario presets: drive the default privacy mode & venue-type ordering
 MEET_SCENARIOS: Dict[str, Dict] = {
     "blind_date": {
-        "display": "相亲 / 初次见面",
-        "desc": "两人不方便共享位置，推荐公开安全、人流适中的场所。",
-        "default_mode": "隐私分离上传",
+        "display": "Blind date / first meeting",
+        "desc": "When sharing exact locations is awkward; suggests public, safe, moderately busy venues.",
+        "default_mode": "privacy-separated upload",
         "venue_types": ["cafe", "restaurant", "park", "bookstore"],
     },
     "couple": {
-        "display": "情侣约会",
-        "desc": "寻找浪漫、适合双人放松的约会地点。",
-        "default_mode": "地址输入",
+        "display": "Couple date",
+        "desc": "Find romantic spots that are relaxing for two.",
+        "default_mode": "address input",
         "venue_types": ["restaurant", "cinema", "park", "cafe", "bar"],
     },
     "friends": {
-        "display": "朋友聚会",
-        "desc": "多人聚餐或休闲活动的最优集合点。",
-        "default_mode": "地址输入",
+        "display": "Friends gathering",
+        "desc": "Best meeting point for group dining or casual activities.",
+        "default_mode": "address input",
         "venue_types": ["restaurant", "bar", "sports", "mall", "cinema"],
     },
     "business": {
-        "display": "商务会面",
-        "desc": "专业、安静、中立的见面场所。",
-        "default_mode": "隐私分离上传",
+        "display": "Business meeting",
+        "desc": "Professional, quiet, neutral meeting venues.",
+        "default_mode": "privacy-separated upload",
         "venue_types": ["cafe", "restaurant", "mall"],
     },
 }
 
 
 # ---------------------------------------------------------------------------
-# 数据模型
+# Data models
 # ---------------------------------------------------------------------------
 @dataclass
 class Location:
@@ -199,12 +259,12 @@ class CandidateRestaurant:
     mapbox_relevance: float
     distance_to_center_km: float
     fairness_delta_km: float = 0.0
-    fairness_delta_minutes: float = 0.0       # 新增：时间公平差（分钟）
-    in_isochrone_intersection: bool = False    # 新增：是否在等时线交集内
+    fairness_delta_minutes: float = 0.0       # travel-time fairness gap (minutes)
+    in_isochrone_intersection: bool = False    # whether inside the isochrone intersection
     rating_proxy: float = 0.5
     web_signals: Dict[str, Any] = field(default_factory=dict)
     final_score: float = 0.0
-    venue_category: str = "restaurant"         # 场所类型键，与 VENUE_TYPES 对应
+    venue_category: str = "restaurant"         # venue-type key (matches VENUE_TYPES)
     best_time_slot: str = ""
     availability_overlap: float = 0.0
     radius_tolerance_score: float = 0.0
@@ -216,6 +276,8 @@ class CandidateRestaurant:
     closest_time_gap_minutes: float = 0.0
     severe_time_gap: bool = False
     score_breakdown: Dict[str, float] = field(default_factory=dict)
+    data_source: str = "mapbox"                # source: mapbox/overpass/nominatim/offline_sample
+    is_sample: bool = False                    # True = offline demo sample (not a live result)
 
 
 def _clip01(x: float) -> float:
@@ -223,7 +285,7 @@ def _clip01(x: float) -> float:
 
 
 # ---------------------------------------------------------------------------
-# 推荐引擎
+# Recommendation engine
 # ---------------------------------------------------------------------------
 class MeetHalfwayRecommender:
     def __init__(
@@ -256,7 +318,7 @@ class MeetHalfwayRecommender:
         self.use_yelp = use_yelp and bool(yelp_api_key)
         self.use_llm_extraction = use_llm_extraction
         self.use_llm_summary = use_llm_summary
-        # 降级标志：首次失败后切换备选方案
+        # Degradation flags: switch to fallbacks after the first failure
         self._mapbox_ok: bool = True
         self._openai_ok: bool = bool(openai_key)
         self._http_max_retries: int = 2 if low_cost_mode else 4
@@ -308,41 +370,55 @@ class MeetHalfwayRecommender:
         return self._retry_base_seconds * (2 ** attempt) + random.uniform(0.0, self._retry_jitter_seconds)
 
     def _post_overpass_with_retry(self, query: str, timeout: int = 25) -> Optional[Dict[str, Any]]:
-        """Overpass 请求带指数退避，减少公共节点 429 影响。"""
-        for attempt in range(self._http_max_retries):
+        """Overpass request: multi-mirror rotation + exponential backoff.
+
+        Public Overpass nodes intermittently return 429 (rate limit) or 406/403 (WAF/regional block).
+        The old version hit a single node and didn't retry 406, failing outright. This now:
+          1. sends a proper User-Agent (reduces WAF blocking);
+          2. rotates across the OVERPASS_ENDPOINTS mirrors;
+          3. treats 403/406/429/5xx as retryable (next mirror or backoff).
+        """
+        endpoints = OVERPASS_ENDPOINTS or [OVERPASS_API_URL]
+        max_attempts = max(self._http_max_retries, len(endpoints))
+        last_error = "unknown"
+        for attempt in range(max_attempts):
+            endpoint = endpoints[attempt % len(endpoints)]
+            host = endpoint.split("//")[-1].split("/")[0]
             try:
-                resp = requests.post(OVERPASS_API_URL, data={"data": query}, timeout=timeout)
-                if resp.status_code == 429 and attempt < self._http_max_retries - 1:
-                    delay = self._backoff_seconds(attempt)
-                    logger.warning("Overpass 触发 429，%.2fs 后重试（%d/%d）", delay, attempt + 1, self._http_max_retries)
-                    time.sleep(delay)
-                    continue
-                if resp.status_code >= 500 and attempt < self._http_max_retries - 1:
-                    delay = self._backoff_seconds(attempt)
-                    logger.warning(
-                        "Overpass 服务异常 %s，%.2fs 后重试（%d/%d）",
-                        resp.status_code,
-                        delay,
-                        attempt + 1,
-                        self._http_max_retries,
-                    )
-                    time.sleep(delay)
-                    continue
+                resp = requests.post(
+                    endpoint,
+                    data={"data": query},
+                    headers=OSM_HTTP_HEADERS,
+                    timeout=timeout,
+                )
+                if resp.status_code in _OVERPASS_RETRYABLE_STATUS:
+                    last_error = f"HTTP {resp.status_code} @ {host}"
+                    if attempt < max_attempts - 1:
+                        delay = self._backoff_seconds(attempt)
+                        logger.warning(
+                            "Overpass %s (%s); switching mirror and retrying in %.2fs (%d/%d)",
+                            resp.status_code, host, delay, attempt + 1, max_attempts,
+                        )
+                        time.sleep(delay)
+                        continue
                 resp.raise_for_status()
                 return resp.json()
             except Exception as exc:
-                if attempt < self._http_max_retries - 1:
+                last_error = f"{type(exc).__name__} @ {host}"
+                if attempt < max_attempts - 1:
                     delay = self._backoff_seconds(attempt)
-                    logger.warning("Overpass 请求异常: %s，%.2fs 后重试（%d/%d）", exc, delay, attempt + 1, self._http_max_retries)
+                    logger.warning(
+                        "Overpass request error: %s; switching mirror and retrying in %.2fs (%d/%d)",
+                        exc, delay, attempt + 1, max_attempts,
+                    )
                     time.sleep(delay)
                     continue
-                logger.warning("Overpass 请求最终失败: %s", exc)
-                return None
+        logger.warning("All Overpass mirrors failed (last error: %s)", last_error)
         return None
 
     @staticmethod
     def _normalize_vote(v: Any) -> float:
-        """将投票值归一化到 [0,1]。支持 [-2,2]、[0,2]、[0,1]。"""
+        """Normalize a vote value to [0,1]. Accepts [-2,2], [0,2], or [0,1]."""
         try:
             fv = float(v)
         except Exception:
@@ -367,8 +443,8 @@ class MeetHalfwayRecommender:
         time_conflict: bool = False,
     ) -> Tuple[str, float, float, float, float, bool]:
         """
-        对单个候选场所进行“时间协商”打分：
-        返回 (最佳时间段, 可用性重叠分, 半径容忍分, 时间投票分)。
+        Score a single candidate's time negotiation:
+        returns (best slot, availability-overlap score, radius-tolerance score, time-vote score).
         """
         if not time_slots:
             return "", 0.5, 0.5, 0.5, 0.0, False
@@ -461,7 +537,7 @@ class MeetHalfwayRecommender:
                 best_overlap = overlap
                 best_time_vote = vote_score
 
-        # 行程时间超过个人容忍半径（分钟）时，分数线性下降
+        # Score drops linearly once travel time exceeds the personal tolerance (minutes)
         radius_a = _clip01(1.0 - max(0.0, ta - tol_a) / tol_a)
         radius_b = _clip01(1.0 - max(0.0, tb - tol_b) / tol_b)
         radius_score = (radius_a + radius_b) / 2.0
@@ -472,7 +548,7 @@ class MeetHalfwayRecommender:
         candidate: CandidateRestaurant,
         place_votes: Optional[Dict[str, Dict[str, float]]],
     ) -> float:
-        """计算双方对场所的互选偏好分，支持按类型与按名称投票。"""
+        """Compute the mutual venue-vote score (by type and by name)."""
         if not place_votes:
             return 0.5
 
@@ -493,11 +569,11 @@ class MeetHalfwayRecommender:
         return 0.65 * mean_score + 0.35 * agreement_score
 
     # -----------------------------------------------------------------------
-    # 几何工具
+    # Geometry helpers
     # -----------------------------------------------------------------------
     @staticmethod
     def haversine_km(a: Location, b: Location) -> float:
-        """Haversine 公式计算两点球面距离（km）。"""
+        """Great-circle distance between two points (km) via the Haversine formula."""
         r = 6371.0
         lat1, lon1 = math.radians(a.lat), math.radians(a.lon)
         lat2, lon2 = math.radians(b.lat), math.radians(b.lon)
@@ -515,20 +591,20 @@ class MeetHalfwayRecommender:
         )
 
     def _travel_minutes(self, a: Location, b: Location) -> float:
-        """根据交通方式估算行程时间（分钟）。"""
+        """Estimate travel time (minutes) from the transport mode."""
         dist_km = self.haversine_km(a, b)
         speed = _SPEED_KM_MIN.get(self.transport, _SPEED_KM_MIN["transit"])
         return dist_km / speed
 
     # -----------------------------------------------------------------------
-    # 等时线（Isochrone）— Mapbox API + 圆形近似降级
+    # Isochrones - ORS/Mapbox API + circle approximation fallback
     # -----------------------------------------------------------------------
     def _fetch_isochrone(self, loc: Location, minutes: int, profile: str) -> Optional[Any]:
-        """调用 Mapbox Isochrone API，返回 shapely Polygon。"""
+        """Call the Mapbox Isochrone API and return a shapely Polygon."""
         if not self.mapbox_token:
             return None
         if not HAS_SHAPELY:
-            logger.warning("shapely 未安装 — 等时线功能已降级为半径近似圆。")
+            logger.warning("shapely not installed - isochrones degraded to radius approximation circles.")
             return None
         url = f"{MAPBOX_ISOCHRONE_BASE}/{profile}/{loc.lon},{loc.lat}"
         params = {
@@ -541,21 +617,21 @@ class MeetHalfwayRecommender:
             resp.raise_for_status()
             features = resp.json().get("features", [])
             if not features:
-                logger.warning("Isochrone API 返回空要素 (%.4f, %.4f)。", loc.lat, loc.lon)
+                logger.warning("Isochrone API returned no features (%.4f, %.4f).", loc.lat, loc.lon)
                 return None
             poly = shape(features[0]["geometry"])
             logger.info(
-                "等时线获取成功 (%.4f, %.4f) | %d 分钟 | profile=%s",
+                "Isochrone fetched (%.4f, %.4f) | %d min | profile=%s",
                 loc.lat, loc.lon, minutes, profile,
             )
             return poly
         except Exception as exc:
-            logger.warning("Mapbox Isochrone 请求失败: %s — 尝试半径近似降级", exc)
+            logger.warning("Mapbox Isochrone request failed: %s - trying radius approximation", exc)
             self._mapbox_ok = False
             return None
 
     def _fetch_isochrone_ors(self, loc: Location, minutes: int, transport: str) -> Optional[Any]:
-        """调用 OpenRouteService Isochrone API，返回 shapely Polygon。"""
+        """Call the OpenRouteService Isochrone API and return a shapely Polygon."""
         if not self.ors_api_key or not HAS_SHAPELY:
             return None
 
@@ -580,11 +656,11 @@ class MeetHalfwayRecommender:
             resp.raise_for_status()
             features = resp.json().get("features", [])
             if not features:
-                logger.warning("ORS Isochrone 返回空要素 (%.4f, %.4f)。", loc.lat, loc.lon)
+                logger.warning("ORS Isochrone returned no features (%.4f, %.4f).", loc.lat, loc.lon)
                 return None
             poly = shape(features[0]["geometry"])
             logger.info(
-                "ORS 等时线获取成功 (%.4f, %.4f) | %d 分钟 | profile=%s",
+                "ORS isochrone fetched (%.4f, %.4f) | %d min | profile=%s",
                 loc.lat,
                 loc.lon,
                 minutes,
@@ -592,32 +668,32 @@ class MeetHalfwayRecommender:
             )
             return poly
         except Exception as exc:
-            logger.warning("ORS Isochrone 请求失败: %s", exc)
+            logger.warning("ORS Isochrone request failed: %s", exc)
             return None
 
     def _circle_fallback(self, loc: Location, minutes: int) -> Optional[Any]:
-        """当 Mapbox 不可用时，用圆形缓冲区近似等时线。"""
+        """Approximate an isochrone with a circular buffer when Mapbox is unavailable."""
         if not HAS_SHAPELY:
             return None
         speed = _SPEED_KM_MIN.get(self.transport, _SPEED_KM_MIN["transit"])
         radius_km = speed * minutes
         radius_deg = radius_km / 111.0  # 1° ≈ 111 km
         pt = Point(loc.lon, loc.lat)
-        logger.info("使用圆形降级等时线 (%.4f, %.4f) | 半径 %.2f km", loc.lat, loc.lon, radius_km)
+        logger.info("Circle-fallback isochrone (%.4f, %.4f) | radius %.2f km", loc.lat, loc.lon, radius_km)
         return pt.buffer(radius_deg)
 
     def get_distance_circle(self, loc: Location, radius_km: float) -> Optional[Any]:
         """
-        以公里为半径，在经纬度坐标系中生成椭球校正后的圆形多边形。
+        Build an ellipsoid-corrected circular polygon (radius in km) in lat/lon space.
 
-        由于经度方向 1° 的实际距离随纬度变化（1° lon = 111*cos(lat) km），
-        此方法用仿射缩放使圆形在大地上近似正圆。
+        Because 1 deg of longitude shrinks with latitude (1 deg lon = 111*cos(lat) km),
+        an affine scale makes the circle look round on the ground.
 
-        参数:
-            loc       : 圆心位置
-            radius_km : 半径（公里）
-        返回:
-            Shapely Polygon，或 None（Shapely 不可用时）
+        Args:
+            loc       : center location
+            radius_km : radius (km)
+        Returns:
+            A Shapely Polygon, or None when Shapely is unavailable.
         """
         if not HAS_SHAPELY:
             return None
@@ -631,9 +707,9 @@ class MeetHalfwayRecommender:
             from shapely.affinity import scale as _shapely_scale  # type: ignore
             ellipse = _shapely_scale(unit_circle, xfact=lon_deg / lat_deg, yfact=1.0, origin=pt)
         except Exception:
-            ellipse = unit_circle  # 仿射失败时保守降级
+            ellipse = unit_circle  # conservative fallback if the affine scale fails
         logger.info(
-            "距离圆 (%.5f, %.5f) 半径 %.2f km / lat_deg=%.5f lon_deg=%.5f",
+            "Distance circle (%.5f, %.5f) radius %.2f km / lat_deg=%.5f lon_deg=%.5f",
             loc.lat, loc.lon, radius_km, lat_deg, lon_deg,
         )
         return ellipse
@@ -646,10 +722,10 @@ class MeetHalfwayRecommender:
         radius_b_km: float,
     ) -> Optional[Any]:
         """
-        根据两人各自的公里半径生成可达圆，返回两圆交集多边形。
+        Build each person's reachable circle and return the intersection polygon.
 
-        若交集为空（双方距离超出两半径之和），降级为两圆并集（宽松模式）。
-        可用于 search_nearby_venues 的 intersection 参数，将搜索范围约束在双方均可达区域。
+        If empty (too far apart), fall back to the union of the circles (relaxed mode).
+        Usable as the search_nearby_venues `intersection` argument to constrain the search area.
         """
         circle_a = self.get_distance_circle(a, radius_a_km)
         circle_b = self.get_distance_circle(b, radius_b_km)
@@ -663,12 +739,12 @@ class MeetHalfwayRecommender:
         radius_b_km: float,
     ) -> Dict[str, Any]:
         """
-        根据两人半径返回搜索区域与区域模式。
+        Return the search area and its mode from the two radii.
 
         mode:
-          - intersection: 双方半径存在重叠
-          - union_fallback: 双方半径无重叠，已降级为并集宽松搜索
-          - unknown: 几何计算失败
+          - intersection: the two radii overlap
+          - union_fallback: no overlap; relaxed union search
+          - unknown: geometry computation failed
         """
         circle_a = self.get_distance_circle(a, radius_a_km)
         circle_b = self.get_distance_circle(b, radius_b_km)
@@ -677,68 +753,142 @@ class MeetHalfwayRecommender:
         try:
             inter = circle_a.intersection(circle_b)
             if inter.is_empty:
-                logger.warning("半径交集为空（双方距离过远）— 使用并集降级搜索。")
+                logger.warning("Radius intersection empty (too far apart) - using union fallback.")
                 return {
                     "geometry": circle_a.union(circle_b),
                     "overlap_exists": False,
                     "mode": "union_fallback",
                 }
             ratio = inter.area / min(circle_a.area, circle_b.area) * 100
-            logger.info("半径交集占较小区域面积 %.1f%%", ratio)
+            logger.info("Radius intersection covers %.1f%% of the smaller area", ratio)
             return {"geometry": inter, "overlap_exists": True, "mode": "intersection"}
         except Exception as exc:
-            logger.error("半径交集计算失败: %s", exc)
+            logger.error("Radius intersection computation failed: %s", exc)
             return {"geometry": None, "overlap_exists": False, "mode": "unknown"}
 
-    def get_isochrone(self, loc: Location) -> Optional[Any]:
-        """获取等时线多边形（优先 Mapbox，失败后使用圆形近似）。"""
-        poly = self._fetch_isochrone_ors(loc, self.isochrone_minutes, self.transport)
+    def _isochrone(self, loc: Location, minutes: int, transport: str) -> Optional[Any]:
+        """Fetch one travel-time isochrone polygon (ORS first, then Mapbox, then circle)."""
+        poly = self._fetch_isochrone_ors(loc, minutes, transport)
         if poly is None:
-            profile = _PROFILE_MAP.get(self.transport, "driving")
-            poly = self._fetch_isochrone(loc, self.isochrone_minutes, profile)
+            profile = _PROFILE_MAP.get(transport, "driving")
+            poly = self._fetch_isochrone(loc, minutes, profile)
         if poly is None:
-            poly = self._circle_fallback(loc, self.isochrone_minutes)
+            poly = self._circle_fallback(loc, minutes)
         return poly
+
+    def get_isochrone(self, loc: Location) -> Optional[Any]:
+        """Travel-time isochrone polygon (ORS first, Mapbox, then circle fallback)."""
+        return self._isochrone(loc, self.isochrone_minutes, self.transport)
+
+    def get_isochrone_search_area(
+        self,
+        a: Location,
+        b: Location,
+        minutes_a: Optional[int] = None,
+        minutes_b: Optional[int] = None,
+        transport_a: Optional[str] = None,
+        transport_b: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Shared feasible region from per-user travel-time isochrones.
+
+        Returns ``{geometry, overlap_exists, mode, iso_a, iso_b}``. ``mode`` is
+        ``isochrone_intersection`` when both reachable regions overlap, otherwise
+        ``isochrone_union_fallback`` (relaxed) or ``unknown``. ``iso_a``/``iso_b``
+        are the individual reachable polygons, used for map visualization.
+        """
+        ma = int(minutes_a) if minutes_a else self.isochrone_minutes
+        mb = int(minutes_b) if minutes_b else self.isochrone_minutes
+        ta = transport_a or self.transport
+        tb = transport_b or self.transport
+        iso_a = self._isochrone(a, ma, ta)
+        iso_b = self._isochrone(b, mb, tb)
+        if iso_a is None or iso_b is None:
+            return {"geometry": None, "overlap_exists": False, "mode": "unknown", "iso_a": iso_a, "iso_b": iso_b}
+        try:
+            inter = iso_a.intersection(iso_b)
+            if inter is not None and not inter.is_empty:
+                ratio = inter.area / min(iso_a.area, iso_b.area) * 100
+                logger.info("Isochrone intersection covers %.1f%% of the smaller region.", ratio)
+                return {"geometry": inter, "overlap_exists": True, "mode": "isochrone_intersection", "iso_a": iso_a, "iso_b": iso_b}
+            logger.warning("Isochrones do not overlap — falling back to union (relaxed mode).")
+            return {"geometry": iso_a.union(iso_b), "overlap_exists": False, "mode": "isochrone_union_fallback", "iso_a": iso_a, "iso_b": iso_b}
+        except Exception as exc:
+            logger.error("Isochrone search-area computation failed: %s", exc)
+            return {"geometry": None, "overlap_exists": False, "mode": "unknown", "iso_a": iso_a, "iso_b": iso_b}
+
+    def get_multi_isochrone_search_area(
+        self,
+        locations: List[Location],
+        minutes_list: Optional[List[int]] = None,
+        transport: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """N-participant shared feasible region from travel-time isochrones.
+
+        Returns ``{geometry, overlap_exists, mode, regions}`` where ``regions`` is
+        the per-participant reachable polygon list (aligned with ``locations``).
+        """
+        t = transport or self.transport
+        regions: List[Any] = []
+        for i, loc in enumerate(locations):
+            minutes = (minutes_list[i] if minutes_list and i < len(minutes_list) else None) or self.isochrone_minutes
+            regions.append(self._isochrone(loc, minutes, t))
+        valid = [r for r in regions if r is not None and not getattr(r, "is_empty", False)]
+        if len(valid) < 2:
+            return {"geometry": None, "overlap_exists": False, "mode": "unknown", "regions": regions}
+        try:
+            inter = valid[0]
+            for r in valid[1:]:
+                inter = inter.intersection(r)
+            if inter is not None and not inter.is_empty:
+                return {"geometry": inter, "overlap_exists": True, "mode": "isochrone_intersection", "regions": regions}
+            union = valid[0]
+            for r in valid[1:]:
+                union = union.union(r)
+            logger.warning("Isochrones do not overlap for all participants — union fallback.")
+            return {"geometry": union, "overlap_exists": False, "mode": "isochrone_union_fallback", "regions": regions}
+        except Exception as exc:
+            logger.error("Multi-isochrone search-area computation failed: %s", exc)
+            return {"geometry": None, "overlap_exists": False, "mode": "unknown", "regions": regions}
 
     def compute_intersection(self, iso_a: Any, iso_b: Any) -> Optional[Any]:
         """
-        计算两个等时线多边形的空间交集。
-        若交集为空（双方距离过远），降级为两者并集（宽松模式）。
+        Compute the spatial intersection of two isochrone polygons.
+        If empty (too far apart), fall back to their union (relaxed mode).
         """
         if iso_a is None or iso_b is None:
             return None
         try:
             inter = iso_a.intersection(iso_b)
             if inter.is_empty:
-                logger.warning("等时线交集为空（双方距离过远）— 使用并集降级。")
+                logger.warning("Isochrone intersection empty (too far apart) - using union fallback.")
                 return iso_a.union(iso_b)
             ratio = inter.area / min(iso_a.area, iso_b.area) * 100
-            logger.info("等时线交集占较小多边形面积 %.1f%%", ratio)
+            logger.info("Isochrone intersection covers %.1f%% of the smaller polygon", ratio)
             return inter
         except Exception as exc:
-            logger.error("等时线交集计算失败: %s", exc)
+            logger.error("Isochrone intersection computation failed: %s", exc)
             return None
 
     # -----------------------------------------------------------------------
-    # 自然障碍剔除（水体 / 森林）— OSM Overpass API
+    # Natural-barrier subtraction (water / forest) - OSM Overpass API
     # -----------------------------------------------------------------------
     def _fetch_natural_barriers(self, poly: Any) -> List[Any]:
         """
-        通过 Overpass API 获取多边形 bbox 内的水体和森林要素，
-        返回 Shapely Polygon 列表。请求失败时返回空列表（降级保守模式）。
+        Fetch water and forest features within the polygon bbox via the Overpass API,
+        returning a list of Shapely Polygons. On failure, return an empty list (conservative).
 
-        查询目标：
-          - natural=water  (湖泊、池塘、河流水面)
-          - natural=wood   (树林)
-          - landuse=forest (林地)
-          - waterway=riverbank (河岸围合水面)
+        Query targets:
+          - natural=water  (lakes, ponds, river surfaces)
+          - natural=wood   (woods)
+          - landuse=forest (forest)
+          - waterway=riverbank (enclosed riverbank water)
         """
         if not HAS_SHAPELY:
             return []
 
         # bounds: (lon_min, lat_min, lon_max, lat_max)
         minx, miny, maxx, maxy = poly.bounds
-        # Overpass bbox 格式: south,west,north,east (即 lat_min,lon_min,lat_max,lon_max)
+        # Overpass bbox format: south,west,north,east (i.e. lat_min,lon_min,lat_max,lon_max)
         query = (
             f"[out:json][timeout:20][bbox:{miny:.6f},{minx:.6f},{maxy:.6f},{maxx:.6f}];\n"
             "(\n"
@@ -750,7 +900,7 @@ class MeetHalfwayRecommender:
         )
         result = self._post_overpass_with_retry(query, timeout=25)
         if result is None:
-            logger.warning("Overpass 自然障碍查询失败 — 跳过障碍剔除（保守模式）")
+            logger.warning("Overpass natural-barrier query failed - skipping barrier removal (conservative)")
             return []
         elements = result.get("elements", [])
 
@@ -759,7 +909,7 @@ class MeetHalfwayRecommender:
             if elem.get("type") != "way":
                 continue
             geom_nodes = elem.get("geometry", [])
-            if len(geom_nodes) < 4:  # 至少 3 顶点 + 闭合点
+            if len(geom_nodes) < 4:  # need >= 3 vertices + closing point
                 continue
             coords = [(pt["lon"], pt["lat"]) for pt in geom_nodes]
             try:
@@ -770,19 +920,19 @@ class MeetHalfwayRecommender:
                 pass
 
         logger.info(
-            "Overpass 自然障碍：在 bbox(%.4f,%.4f,%.4f,%.4f) 内找到 %d 个水体/森林要素",
+            "Overpass barriers: found %d water/forest features in bbox(%.4f,%.4f,%.4f,%.4f)",
             miny, minx, maxy, maxx, len(barriers),
         )
         return barriers
 
     def subtract_natural_barriers(self, intersection: Any) -> Any:
         """
-        从等时线交集多边形中扣除水体、森林等不可实际抵达的自然地物。
+        Subtract water/forest and other unreachable natural features from the isochrone intersection.
 
-        降级链：
-          Overpass 查询失败 → 返回原交集（保守模式，不剔除任何区域）
-          差集结果为空     → 返回原交集（保守模式）
-          Shapely 未安装   → 返回原交集
+        Fallback chain:
+          Overpass query fails -> return the original intersection (remove nothing)
+          empty difference     -> return the original intersection (conservative)
+          Shapely missing      -> return the original intersection
         """
         if intersection is None or not HAS_SHAPELY:
             return intersection
@@ -796,21 +946,21 @@ class MeetHalfwayRecommender:
         try:
             result = intersection.difference(barrier_union)
             if result.is_empty:
-                logger.warning("剔除自然障碍后交集为空 — 保留原交集多边形（保守模式）。")
+                logger.warning("Intersection empty after barrier removal - keeping the original (conservative).")
                 return intersection
             removed_pct = (original_area - result.area) / original_area * 100
             logger.info(
-                "自然障碍剔除完成：共 %d 个区域，移除面积占比 %.1f%%",
+                "Barrier removal done: %d regions, %.1f%% of area removed",
                 len(barriers),
                 removed_pct,
             )
             return result
         except Exception as exc:
-            logger.warning("障碍剔除计算异常: %s — 保留原多边形", exc)
+            logger.warning("Barrier removal error: %s - keeping the original polygon", exc)
             return intersection
 
     # -----------------------------------------------------------------------
-    # 人流密度 Hard Filter（POI 密度过低 → 偏僻区域直接剔除）
+    # POI-density hard filter (drop too-isolated areas with low POI density)
     # -----------------------------------------------------------------------
     def filter_by_poi_density(
         self,
@@ -819,23 +969,23 @@ class MeetHalfwayRecommender:
         min_poi_count: int = 5,
     ) -> List[CandidateRestaurant]:
         """
-        人流密度 Hard Filter：剔除 POI 密度过低（过于偏僻）的候选场所。
+        POI-density hard filter: drop candidates in too-isolated, low-POI areas.
 
-        策略：
-          1. 一次性用 Overpass API 批量查询所有候选点 bbox 内的公开 POI
+        Strategy:
+          1. one batched Overpass query for public POIs within the candidates' bbox
              （amenity / shop / tourism / leisure）。
-          2. 统计每个候选在 radius_m 米半径内的 POI 数量。
-          3. 低于 min_poi_count 的候选直接剔除（hard filter）。
-          4. 降级保守模式：Overpass 失败 或 全部被过滤 → 保留原列表。
+          2. count POIs within radius_m meters of each candidate.
+          3. drop candidates below min_poi_count (hard filter).
+          4. conservative: if Overpass fails or all would be filtered -> keep the original list.
 
-        参数：
-          radius_m      : 半径（米），默认 300m
-          min_poi_count : 最低 POI 门槛，默认 5 个
+        Args:
+          radius_m      : radius in meters (default 300m)
+          min_poi_count : minimum POI threshold (default 5)
         """
         if not candidates:
             return candidates
 
-        # 计算 bbox，留 0.01° 缓冲（约 1 km）
+        # Compute bbox with a 0.01 deg buffer (~1 km)
         lats = [c.lat for c in candidates]
         lons = [c.lon for c in candidates]
         lat_min = min(lats) - 0.01
@@ -856,18 +1006,18 @@ class MeetHalfwayRecommender:
         )
         result = self._post_overpass_with_retry(query, timeout=25)
         if result is None:
-            logger.warning("Overpass POI 密度查询失败 — 跳过密度过滤（保守模式）")
+            logger.warning("Overpass POI-density query failed - skipping density filter (conservative)")
             return candidates
         poi_nodes = result.get("elements", [])
 
-        # 仅保留带坐标的 node
+        # keep only nodes that carry coordinates
         poi_points: List[Tuple[float, float]] = [
             (float(n["lat"]), float(n["lon"]))
             for n in poi_nodes
             if n.get("type") == "node" and "lat" in n and "lon" in n
         ]
         logger.info(
-            "Overpass POI 密度查询：bbox 内共 %d 个公开 POI 节点", len(poi_points)
+            "Overpass POI density: %d public POI nodes in bbox", len(poi_points)
         )
 
         radius_km = radius_m / 1000.0
@@ -882,23 +1032,23 @@ class MeetHalfwayRecommender:
             if count >= min_poi_count:
                 passed.append(c)
                 logger.debug(
-                    "POI 密度通过  %-22s | %3d POI in %.0fm",
+                    "POI density pass  %-22s | %3d POI in %.0fm",
                     c.name[:22], count, radius_m,
                 )
             else:
                 logger.info(
-                    "POI 密度剔除  %-22s | 仅 %d POI in %.0fm（阈值=%d）",
+                    "POI density drop  %-22s | only %d POI in %.0fm (threshold=%d)",
                     c.name[:22], count, radius_m, min_poi_count,
                 )
 
         if not passed:
             logger.warning(
-                "POI 密度 Hard Filter 后候选为空 — 保留原列表（保守模式）。"
+                "No candidates left after POI-density filter - keeping the original list (conservative)."
             )
             return candidates
 
         logger.info(
-            "POI 密度 Hard Filter：%d → %d 个候选（剔除 %d 个偏僻场所）",
+            "POI-density filter: %d -> %d candidates (dropped %d isolated venues)",
             len(candidates), len(passed), len(candidates) - len(passed),
         )
         return passed
@@ -908,11 +1058,11 @@ class MeetHalfwayRecommender:
         candidates: List[CandidateRestaurant],
     ) -> Tuple[List[CandidateRestaurant], Dict[str, int]]:
         """
-        根据 Web 信号中的营业状态剔除已知关闭的候选。
+        Drop candidates known to be closed based on the web-signal status.
 
-        规则：
-          - status=closed: 直接剔除
-          - status=open / uncertain: 保留
+        Rules:
+          - status=closed: drop
+          - status=open / uncertain: keep
         """
         stats = {"open": 0, "closed": 0, "uncertain": 0}
         filtered: List[CandidateRestaurant] = []
@@ -925,7 +1075,7 @@ class MeetHalfwayRecommender:
                 continue
             filtered.append(c)
         logger.info(
-            "营业状态过滤：open=%d uncertain=%d closed=%d -> 保留 %d/%d",
+            "Open-status filter: open=%d uncertain=%d closed=%d -> kept %d/%d",
             stats["open"],
             stats["uncertain"],
             stats["closed"],
@@ -940,7 +1090,7 @@ class MeetHalfwayRecommender:
         intersection: Optional[Any],
         area_mode: str = "intersection",
     ) -> None:
-        """标记每个候选餐厅是否落在等时线交集内。"""
+        """Tag each candidate with whether it falls inside the isochrone intersection."""
         if intersection is None or not HAS_SHAPELY:
             for c in candidates:
                 c.search_area_mode = area_mode
@@ -950,11 +1100,11 @@ class MeetHalfwayRecommender:
             pt = Point(c.lon, c.lat)
             c.search_area_mode = area_mode
             c.in_isochrone_intersection = area_mode == "intersection" and intersection.contains(pt)
-            verdict = "交集内" if c.in_isochrone_intersection else "交集外"
+            verdict = "inside" if c.in_isochrone_intersection else "outside"
             logger.debug("%s  %s", verdict, c.name)
 
     # -----------------------------------------------------------------------
-    # 餐厅搜索（Mapbox POI -> OSM 降级）
+    # Venue search (Mapbox POI -> OSM fallback)
     # -----------------------------------------------------------------------
     def search_nearby_venues(
         self,
@@ -965,19 +1115,19 @@ class MeetHalfwayRecommender:
         intersection: Optional[Any] = None,
     ) -> List[CandidateRestaurant]:
         """
-        搜索中心点周边场所（Mapbox POI → OSM 降级）。
+        Search venues around the center (Mapbox POI -> OSM fallback).
 
-        venue_type  : VENUE_TYPES 中的键（restaurant/cafe/park/mall/cinema/…）
-        keyword     : 自定义搜索词（非空时覆盖 venue_type 内置 query）
-        intersection: 交集多边形（Shapely Polygon）。若提供则：
-                      1) 用交集质心替代 center 作为搜索中心；
-                      2) 结果后置过滤——仅保留落在交集内的场所。
-                         若过滤后为空则保守地保留全部结果。
+        venue_type  : a VENUE_TYPES key (restaurant/cafe/park/mall/cinema/...)
+        keyword     : custom search term (overrides the venue_type query when non-empty)
+        intersection: shared polygon (Shapely). When provided:
+                      1) use its centroid as the search center;
+                      2) post-filter results to those inside the polygon.
+                         If that leaves nothing, conservatively keep all results.
         """
         cfg = VENUE_TYPES.get(venue_type, VENUE_TYPES["restaurant"])
         q = keyword.strip() if keyword.strip() else cfg["query"]
 
-        # —— 若提供交集多边形，改用其质心作为搜索中心 ——
+        # If an intersection polygon is given, use its centroid as the search center.
         search_center = center
         if intersection is not None and HAS_SHAPELY:
             try:
@@ -985,20 +1135,17 @@ class MeetHalfwayRecommender:
                     centroid = intersection.centroid
                     search_center = Location(lat=centroid.y, lon=centroid.x)
                     logger.info(
-                        "交集质心作为搜索中心: (%.5f, %.5f)",
+                        "Using intersection centroid as search center: (%.5f, %.5f)",
                         search_center.lat, search_center.lon,
                     )
             except Exception as exc:
-                logger.warning("无法提取交集质心，回退默认中心: %s", exc)
+                logger.warning("Could not extract intersection centroid, using default center: %s", exc)
 
         if not self.mapbox_token:
-            overpass_items = self._search_overpass(
-                search_center, venue_type=venue_type, limit=limit, intersection=intersection
+            logger.info("Mapbox not configured - going straight to the Overpass/OSM/sample fallback chain.")
+            return self._fallback_venue_search(
+                search_center, center, venue_type, q, limit, intersection
             )
-            if overpass_items:
-                return overpass_items
-            logger.warning("Mapbox 未配置且 Overpass 无结果，切换 OSM Nominatim。")
-            return self._search_osm(search_center, q, limit, venue_category=venue_type)
 
         url = f"{MAPBOX_GEOCODE_BASE}/{requests.utils.quote(q)}.json"
         params = {
@@ -1013,13 +1160,10 @@ class MeetHalfwayRecommender:
             resp.raise_for_status()
             data = resp.json()
         except Exception as exc:
-            logger.error("Mapbox 场所搜索失败: %s — 切换 Overpass/OSM", exc)
-            overpass_items = self._search_overpass(
-                search_center, venue_type=venue_type, limit=limit, intersection=intersection
+            logger.error("Mapbox venue search failed: %s - switching to Overpass/OSM/sample", exc)
+            return self._fallback_venue_search(
+                search_center, center, venue_type, q, limit, intersection
             )
-            if overpass_items:
-                return overpass_items
-            return self._search_osm(search_center, q, limit, venue_category=venue_type)
 
         items: List[CandidateRestaurant] = []
         for ft in data.get("features", []):
@@ -1037,23 +1181,51 @@ class MeetHalfwayRecommender:
                     distance_to_center_km=self.haversine_km(center, pos),
                     rating_proxy=float(ft.get("relevance", 0.5)),
                     venue_category=venue_type,
+                    data_source="mapbox",
                 )
             )
 
-        # —— 交集过滤：仅保留落在交集区域内的场所 ——
+        # Intersection filter: keep only venues inside the shared area.
         items = self._filter_by_intersection(items, intersection, center)
         if not items:
-            logger.warning("Mapbox 成功返回但无候选，切换 Overpass/OSM 降级。")
-            overpass_items = self._search_overpass(
-                search_center, venue_type=venue_type, limit=limit, intersection=intersection
+            logger.warning("Mapbox returned but no candidates - switching to Overpass/OSM/sample.")
+            return self._fallback_venue_search(
+                search_center, center, venue_type, q, limit, intersection
             )
-            if overpass_items:
-                return overpass_items
-            return self._search_osm(search_center, q, limit, venue_category=venue_type)
 
         venue_display = cfg["display"]
-        logger.info("Mapbox 搜索返回 %d 个候选场所（类型=%s）", len(items), venue_display)
+        logger.info("Mapbox search returned %d candidates (type=%s)", len(items), venue_display)
         return items
+
+    def _fallback_venue_search(
+        self,
+        search_center: Location,
+        center: Location,
+        venue_type: str,
+        q: str,
+        limit: int,
+        intersection: Optional[Any],
+    ) -> List[CandidateRestaurant]:
+        """Fallback search chain: Overpass -> Nominatim -> offline sample (guaranteed non-empty).
+
+        Unifies the three Mapbox-failure branches and guarantees a result to display -
+        the sample data is the last line of defense for the paper's graceful-degradation claim.
+        """
+        overpass_items = self._search_overpass(
+            search_center, venue_type=venue_type, limit=limit, intersection=intersection
+        )
+        if overpass_items:
+            return overpass_items
+
+        logger.warning("No Overpass results - switching to OSM Nominatim.")
+        osm_items = self._search_osm(search_center, q, limit, venue_category=venue_type)
+        if osm_items:
+            return osm_items
+
+        # Final fallback: clearly-labeled offline demo sample
+        return self._offline_sample_venues(
+            center, venue_type=venue_type, limit=limit, intersection=intersection
+        )
 
     def _filter_by_intersection(
         self,
@@ -1062,8 +1234,8 @@ class MeetHalfwayRecommender:
         fallback_center: Location,
     ) -> List[CandidateRestaurant]:
         """
-        将候选列表过滤到交集多边形内部。
-        若过滤后为空（交集过小或候选稀疏），保守地保留原列表并记录警告。
+        Filter the candidate list to those inside the intersection polygon.
+        If that leaves nothing (tiny intersection or sparse candidates), keep the original and warn.
         """
         if not items or intersection is None or not HAS_SHAPELY:
             return items
@@ -1073,15 +1245,15 @@ class MeetHalfwayRecommender:
             inside = [c for c in items if intersection.contains(Point(c.lon, c.lat))]
             if inside:
                 logger.info(
-                    "交集过滤: %d → %d 个候选场所（仅保留重叠区域内）",
+                    "Intersection filter: %d -> %d candidates (kept only those in the overlap)",
                     len(items), len(inside),
                 )
                 return inside
             logger.warning(
-                "交集过滤后无候选 — 保留全部 %d 个候选并更新至中心距离（保守模式）",
+                "No candidates after intersection filter - keeping all %d and reranking by center distance (conservative)",
                 len(items),
             )
-            # 保守模式：按交集质心重新排序
+            # conservative: rerank by distance to the intersection centroid
             centroid = intersection.centroid
             c_loc = Location(lat=centroid.y, lon=centroid.x)
             for c in items:
@@ -1089,19 +1261,83 @@ class MeetHalfwayRecommender:
             items.sort(key=lambda x: x.distance_to_center_km)
             return items
         except Exception as exc:
-            logger.warning("交集过滤异常 — 保留原列表: %s", exc)
+            logger.warning("Intersection filter error - keeping the original list: %s", exc)
             return items
+
+    def _offline_sample_venues(
+        self,
+        center: Location,
+        venue_type: str = "restaurant",
+        limit: int = 6,
+        intersection: Optional[Any] = None,
+    ) -> List[CandidateRestaurant]:
+        """Offline demo-sample fallback: return clearly-labeled sample venues when all live lookups fail.
+
+        Called when venue-network issues, a dead Mapbox key, or regional Overpass blocking
+        occur, so the demo always has results - the paper's 'graceful degradation, not silent crash'.
+
+        To keep the map sensible at any center, the whole Riverside sample cluster is shifted by
+        (center - Riverside anchor) to the user's actual center, preserving relative layout.
+        status/queue/crowd are illustrative; candidate.is_sample=True and the UI must label it.
+        """
+        # Auxiliary categories (parking/gas) have no sample data; faking with restaurants would mislead -> return empty.
+        if venue_type not in _OFFLINE_SAMPLE_VENUES and venue_type in ("parking", "gas_station"):
+            return []
+        table = _OFFLINE_SAMPLE_VENUES.get(venue_type) or _OFFLINE_SAMPLE_VENUES["restaurant"]
+        anchor_lat, anchor_lon = _RIVERSIDE_DOWNTOWN
+        # If the user's center is far from Riverside, shift the sample cluster near it (still sample data).
+        far_from_anchor = self.haversine_km(center, Location(anchor_lat, anchor_lon)) > 40.0
+        dlat = center.lat - anchor_lat if far_from_anchor else 0.0
+        dlon = center.lon - anchor_lon if far_from_anchor else 0.0
+
+        items: List[CandidateRestaurant] = []
+        for (name, lat, lon, rating, status, queue, crowd, wait) in table:
+            plat, plon = lat + dlat, lon + dlon
+            pos = Location(plat, plon)
+            c = CandidateRestaurant(
+                name=name,
+                lat=plat,
+                lon=plon,
+                place_name=f"{name} · Riverside, CA (demo sample)",
+                mapbox_relevance=0.6,
+                distance_to_center_km=self.haversine_km(center, pos),
+                rating_proxy=rating,
+                venue_category=venue_type,
+                data_source="offline_sample",
+                is_sample=True,
+            )
+            c.web_signals = {
+                "status": status,
+                "queue_level": queue,
+                "crowd_index": crowd,
+                "estimated_wait_minutes": wait,
+                "promo_bonus": 0.0,
+                "risk_penalty": 0.0,
+                "confidence": "sample",
+                "reason": "Offline demo sample: status/queue/crowd are illustrative estimates, not live results.",
+                "source": "offline_sample",
+            }
+            items.append(c)
+
+        items.sort(key=lambda x: x.distance_to_center_km)
+        items = self._filter_by_intersection(items, intersection, center)
+        result = items[: max(1, limit)]
+        logger.warning(
+            "All live lookups failed - using offline demo sample data (%d, type=%s).",
+            len(result), venue_type,
+        )
+        return result
 
     def search_nearby_restaurants(
         self, center: Location, cuisine: str, limit: int = 12
     ) -> List[CandidateRestaurant]:
-        """向后兼容接口，内部调用 search_nearby_venues。"""
+        """Backward-compatible wrapper that delegates to search_nearby_venues."""
         return self.search_nearby_venues(
             center=center, venue_type="restaurant", keyword=cuisine, limit=limit
         )
 
     def geocode_address(self, address: str, city_hint: str = "") -> Optional[Location]:
-        """地址转坐标（优先 Mapbox，失败后降级 OSM）。"""
+        """Geocode an address (Mapbox first, OSM fallback)."""
         query = address.strip()
         if city_hint and city_hint not in query:
             query = f"{city_hint} {query}"
@@ -1118,15 +1354,15 @@ class MeetHalfwayRecommender:
             features = resp.json().get("features", [])
             if features:
                 lon, lat = features[0]["center"]
-                logger.info("地址解析成功(Mapbox): %s -> (%.6f, %.6f)", address, lat, lon)
+                logger.info("Geocoded (Mapbox): %s -> (%.6f, %.6f)", address, lat, lon)
                 return Location(lat=float(lat), lon=float(lon))
         except Exception as exc:
-            logger.warning("Mapbox 地址解析失败: %s", exc)
+            logger.warning("Mapbox geocoding failed: %s", exc)
 
         return self._geocode_address_osm(address, city_hint)
 
     def _geocode_address_osm(self, address: str, city_hint: str = "") -> Optional[Location]:
-        """地址转坐标 OSM 降级方案。"""
+        """OSM geocoding fallback."""
         query = address.strip()
         if city_hint and city_hint not in query:
             query = f"{city_hint} {query}"
@@ -1145,17 +1381,17 @@ class MeetHalfwayRecommender:
             if rows:
                 lat = float(rows[0]["lat"])
                 lon = float(rows[0]["lon"])
-                logger.info("地址解析成功(OSM): %s -> (%.6f, %.6f)", address, lat, lon)
+                logger.info("Geocoded (OSM): %s -> (%.6f, %.6f)", address, lat, lon)
                 return Location(lat=lat, lon=lon)
         except Exception as exc:
-            logger.warning("OSM 地址解析失败: %s", exc)
+            logger.warning("OSM geocoding failed: %s", exc)
         return None
 
     def _search_osm(
         self, center: Location, query: str, limit: int, venue_category: str = "restaurant"
     ) -> List[CandidateRestaurant]:
-        """OSM Nominatim 降级搜索（Mapbox 不可用时使用）。"""
-        logger.info("使用 OSM Nominatim 降级搜索 ...")
+        """OSM Nominatim fallback search (used when Mapbox is unavailable)."""
+        logger.info("Using OSM Nominatim fallback search ...")
         url = "https://nominatim.openstreetmap.org/search"
         params = {
             "q": query,
@@ -1174,7 +1410,7 @@ class MeetHalfwayRecommender:
             resp.raise_for_status()
             data = resp.json()
         except Exception as exc:
-            logger.error("OSM 降级搜索也失败: %s", exc)
+            logger.error("OSM fallback search also failed: %s", exc)
             return []
 
         items = []
@@ -1190,10 +1426,11 @@ class MeetHalfwayRecommender:
                     distance_to_center_km=self.haversine_km(center, pos),
                     rating_proxy=0.5,
                     venue_category=venue_category,
+                    data_source="nominatim",
                 )
             )
         venue_display = VENUE_TYPES.get(venue_category, {}).get("display", venue_category)
-        logger.info("OSM 返回 %d 个候选场所（类型=%s）", len(items), venue_display)
+        logger.info("OSM returned %d candidates (type=%s)", len(items), venue_display)
         return items
 
     def _search_overpass(
@@ -1204,29 +1441,29 @@ class MeetHalfwayRecommender:
         intersection: Optional[Any] = None,
     ) -> List[CandidateRestaurant]:
         """
-        Overpass QL 场所搜索（无 Key），尽量单次请求避免高频。
+        Overpass QL venue search (no key); single request to avoid hammering.
 
-        intersection: 若提供交集多边形，则用其 bbox 作为 Overpass 查询边界
-                      并对结果进行多边形内部过滤，确保只返回双方可达区域内的场所。
+        intersection: if a polygon is given, use its bbox as the Overpass query bounds
+                      and post-filter results to inside the polygon (shared reachable area only).
         """
         selectors = _OVERPASS_FILTERS.get(venue_type, _OVERPASS_FILTERS["restaurant"])
 
-        # 如果提供了交集多边形，优先用其 bbox 而非固定圆形半径
+        # Prefer the intersection bbox over a fixed circular radius when available
         if intersection is not None and HAS_SHAPELY:
             try:
                 minx, miny, maxx, maxy = intersection.bounds  # (lon_min,lat_min,lon_max,lat_max)
-                # 转换为 Overpass bbox 格式: south,west,north,east
+                # convert to Overpass bbox format: south,west,north,east
                 bbox_str = f"{miny:.6f},{minx:.6f},{maxy:.6f},{maxx:.6f}"
                 selector_block = "\n".join(
                     f"  {s}({bbox_str});" for s in selectors
                 )
                 logger.info(
-                    "Overpass 使用交集 bbox 查询: SW(%.5f,%.5f) NE(%.5f,%.5f)",
+                    "Overpass bbox query: SW(%.5f,%.5f) NE(%.5f,%.5f)",
                     miny, minx, maxy, maxx,
                 )
             except Exception as exc:
-                logger.warning("交集 bbox 提取失败，回退固定半径: %s", exc)
-                intersection = None  # 强制回退
+                logger.warning("Failed to extract intersection bbox, using fixed radius: %s", exc)
+                intersection = None  # force fallback
 
         if intersection is None:
             radius_m = 4500
@@ -1244,7 +1481,7 @@ class MeetHalfwayRecommender:
 
         result_json = self._post_overpass_with_retry(query, timeout=25)
         if result_json is None:
-            logger.warning("Overpass 场所搜索失败")
+            logger.warning("Overpass venue search failed")
             return []
         rows = result_json.get("elements", [])
 
@@ -1279,18 +1516,19 @@ class MeetHalfwayRecommender:
                     distance_to_center_km=self.haversine_km(center, pos),
                     rating_proxy=0.5,
                     venue_category=venue_type,
+                    data_source="overpass",
                 )
             )
 
         items.sort(key=lambda x: x.distance_to_center_km)
-        # 若提供交集，过滤多边形内部的场所
+        # If an intersection is given, filter to venues inside the polygon
         items = self._filter_by_intersection(items, intersection, center)
         result = items[: max(1, limit)]
-        logger.info("Overpass 返回 %d 个候选场所（类型=%s）", len(result), venue_type)
+        logger.info("Overpass returned %d candidates (type=%s)", len(result), venue_type)
         return result
 
     # -----------------------------------------------------------------------
-    # 异步并发 Web 信号采集 + LLM 语义提取
+    # Async concurrent web-signal collection + LLM semantic extraction
     # -----------------------------------------------------------------------
     async def _fetch_tavily(
         self,
@@ -1301,11 +1539,11 @@ class MeetHalfwayRecommender:
         time_slot: str,
         party_size: int,
     ) -> Dict[str, Any]:
-        """单个场所的网页采集（优先 Tavily，失败/缺失降级 DuckDuckGo）。"""
-        venue_display = VENUE_TYPES.get(candidate.venue_category, {}).get("display", "场所")
+        """Per-venue web collection (Tavily first, DuckDuckGo fallback)."""
+        venue_display = VENUE_TYPES.get(candidate.venue_category, {}).get("display", "venue")
         query = (
-            f"{candidate.name} {city_hint} {time_slot} {party_size}人 "
-            f"{venue_display} 开放状态 人流量 排队 等待 优惠 {year_hint}"
+            f"{candidate.name} {city_hint} {time_slot} {party_size} people "
+            f"{venue_display} open status crowd wait queue deals {year_hint}"
         )
         if not self.tavily_key:
             return await self._fetch_duckduckgo(
@@ -1328,7 +1566,7 @@ class MeetHalfwayRecommender:
             r.raise_for_status()
             result = r.json()
         except Exception as exc:
-            logger.warning("Tavily 搜索失败 [%s]: %s", candidate.name, exc)
+            logger.warning("Tavily search failed [%s]: %s", candidate.name, exc)
             return await self._fetch_duckduckgo(
                 query,
                 candidate,
@@ -1347,7 +1585,7 @@ class MeetHalfwayRecommender:
             for row in result.get("results", [])
         ]
 
-        # LLM 语义提取（优先），关键词匹配（降级）
+        # LLM semantic extraction (preferred), keyword matching (fallback)
         if self.use_llm_extraction and self._openai_ok and self.openai_key:
             signals = await self._llm_extract(
                 candidate.name,
@@ -1380,7 +1618,7 @@ class MeetHalfwayRecommender:
         party_size: int,
         fallback_reason: str = "",
     ) -> Dict[str, Any]:
-        """DuckDuckGo 搜索降级（无需 API Key）。"""
+        """DuckDuckGo search fallback (no API key needed)."""
 
         def _ddg_text(q: str) -> List[Dict[str, Any]]:
             from ddgs import DDGS  # noqa: PLC0415
@@ -1391,7 +1629,7 @@ class MeetHalfwayRecommender:
         try:
             rows = await asyncio.to_thread(_ddg_text, query)
         except Exception as exc:
-            logger.warning("DuckDuckGo 搜索失败 [%s]: %s", candidate.name, exc)
+            logger.warning("DuckDuckGo search failed [%s]: %s", candidate.name, exc)
             out = self._default_signals(f"ddg_failed: {exc}")
             out.update(
                 {
@@ -1446,36 +1684,36 @@ class MeetHalfwayRecommender:
         venue_type: str = "restaurant",
     ) -> Dict[str, Any]:
         """
-        将 Tavily 搜索结果喂给 GPT-4o-mini，返回结构化 JSON。
+        Feed the Tavily search results to the LLM and return structured JSON.
 
-        Prompt 设计目标：
-        - 识别委婉表达（如"老板回老家结婚了，暂别一个月" -> closed）
-        - 提取置信度字段，避免过度自信
-        - 强制 JSON 输出格式，防止幻觉污染评分
+        Prompt goals:
+        - detect euphemistic closures (e.g. 'closed for a month for a family event' -> closed)
+        - extract a confidence field to avoid overconfidence
+        - force JSON output so hallucinations don't pollute scoring
         """
         snippet_text = "\n".join(
             f"[{i + 1}] {s['title']}\n{s['content']}" for i, s in enumerate(snippets[:5])
         )
-        venue_display = VENUE_TYPES.get(venue_type, {}).get("display", "场所")
+        venue_display = VENUE_TYPES.get(venue_type, {}).get("display", "venue")
         system_prompt = (
-            f"你是一个{venue_display}实时信息提取专家。仔细阅读搜索结果（包括隐晦表达），"
-            "返回合法 JSON，只含以下字段，不输出其他任何文字：\n"
+            f"You extract real-time info for {venue_display} venues. Read the search results carefully (including subtle phrasing), "
+            "and return valid JSON with ONLY the following fields and no other text:\n"
             "  status        : 'open' | 'closed' | 'uncertain'\n"
-            "  promo_bonus   : 0.0~1.0（有折扣/优惠券/满减等促销 -> 0.6，无 -> 0.0）\n"
+            "  promo_bonus   : 0.0-1.0 (discount/coupon/deal -> 0.6, none -> 0.0)\n"
             "  queue_level   : 'low' | 'medium' | 'high' | 'unknown'\n"
-            "  crowd_index   : 0.0~1.0（该时段拥挤程度，越大越拥挤）\n"
-            "  estimated_wait_minutes : 0~180（该时段该人数预估等位分钟）\n"
-            "  risk_penalty  : 0.0~1.0（停业/装修/卫生投诉等风险 -> 0.8，无 -> 0.0）\n"
+            "  crowd_index   : 0.0-1.0 (how crowded at this time; higher = busier)\n"
+            "  estimated_wait_minutes : 0-180 (estimated wait for this time and party size)\n"
+            "  risk_penalty  : 0.0-1.0 (closure/renovation/hygiene complaints -> 0.8, none -> 0.0)\n"
             "  confidence    : 'high' | 'medium' | 'low'\n"
-            "  reason        : 最多 30 字的中文说明\n"
-            "注意：若描述含有委婉停业表达（如'暂别''老板有事''改造升级'等）"
-            "应识别为 status=closed。信息不足时 confidence=low。"
+            "  reason        : a short English explanation (<= 20 words)\n"
+            "Note: if the text implies closure (e.g. temporarily closed, under renovation, on hiatus) "
+            "mark status=closed. When information is insufficient, set confidence=low."
         )
         user_msg = (
-            f"{venue_display}名称: {restaurant_name}\n\n"
-            f"目标场景: {time_slot}，{party_size}人\n\n"
-            f"Tavily 汇总:\n{answer}\n\n"
-            f"搜索片段:\n{snippet_text}"
+            f"{venue_display} name: {restaurant_name}\n\n"
+            f"Scenario: {time_slot}, {party_size} people\n\n"
+            f"Tavily summary:\n{answer}\n\n"
+            f"Search snippets:\n{snippet_text}"
         )
         try:
             aclient = self._get_async_openai_client()
@@ -1494,7 +1732,7 @@ class MeetHalfwayRecommender:
             raw = resp.choices[0].message.content or "{}"
             data = json.loads(raw)
             logger.debug(
-                "LLM 提取 [%s] -> status=%s reason=%s",
+                "LLM extract [%s] -> status=%s reason=%s",
                 restaurant_name,
                 data.get("status"),
                 data.get("reason", ""),
@@ -1511,9 +1749,9 @@ class MeetHalfwayRecommender:
             }
         except Exception as exc:
             logger.warning(
-                "LLM 提取失败 [%s]: %s — 降级为关键词匹配", restaurant_name, exc
+                "LLM extraction failed [%s]: %s - falling back to keyword matching", restaurant_name, exc
             )
-            self._openai_ok = False  # 本次会话不再重试
+            self._openai_ok = False  # don't retry the LLM again this session
             return self._keyword_extract(answer, snippets)
 
     async def _fetch_yelp(
@@ -1521,7 +1759,7 @@ class MeetHalfwayRecommender:
         client: httpx.AsyncClient,
         candidate: CandidateRestaurant,
     ) -> Dict[str, Any]:
-        """查询 Yelp Fusion 评分与评论量，补强 rating_proxy。"""
+        """Query Yelp Fusion rating and review count to reinforce rating_proxy."""
         if not self.yelp_api_key:
             return {"matched": False, "source": "yelp", "error": "missing_yelp_api_key"}
 
@@ -1554,7 +1792,7 @@ class MeetHalfwayRecommender:
                     rating = float(top.get("rating", 0.0) or 0.0)
                     review_count = int(top.get("review_count", 0) or 0)
                     rating_norm = _clip01(rating / 5.0)
-                    # 评论量置信补偿：避免仅靠少量评论抬高评分
+                    # review-count confidence adjustment: avoid inflating scores from few reviews
                     review_conf = _clip01(math.log1p(review_count) / math.log(501))
                     blended = _clip01(0.8 * rating_norm + 0.2 * review_conf)
 
@@ -1572,7 +1810,7 @@ class MeetHalfwayRecommender:
                     if status in (429, 500, 502, 503, 504) and attempt < self._http_max_retries - 1:
                         delay = self._backoff_seconds(attempt)
                         logger.warning(
-                            "Yelp 暂时限流/异常 [%s] status=%s，%.2fs 后重试（%d/%d）",
+                            "Yelp throttled/error [%s] status=%s; retrying in %.2fs (%d/%d)",
                             candidate.name,
                             status,
                             delay,
@@ -1581,7 +1819,7 @@ class MeetHalfwayRecommender:
                         )
                         await asyncio.sleep(delay)
                         continue
-                    logger.warning("Yelp 查询失败 [%s]: %s", candidate.name, exc)
+                    logger.warning("Yelp query failed [%s]: %s", candidate.name, exc)
                     return {
                         "matched": False,
                         "source": "yelp",
@@ -1592,7 +1830,7 @@ class MeetHalfwayRecommender:
                     if attempt < self._http_max_retries - 1:
                         delay = self._backoff_seconds(attempt)
                         logger.warning(
-                            "Yelp 请求异常 [%s]: %s，%.2fs 后重试（%d/%d）",
+                            "Yelp request error [%s]: %s; retrying in %.2fs (%d/%d)",
                             candidate.name,
                             exc,
                             delay,
@@ -1601,35 +1839,35 @@ class MeetHalfwayRecommender:
                         )
                         await asyncio.sleep(delay)
                         continue
-                    logger.warning("Yelp 查询失败 [%s]: %s", candidate.name, exc)
+                    logger.warning("Yelp query failed [%s]: %s", candidate.name, exc)
                     return {"matched": False, "source": "yelp", "error": str(exc)[:120]}
 
         return {"matched": False, "source": "yelp", "error": "retry_exhausted"}
 
     @staticmethod
     def _keyword_extract(answer: str, snippets: List[Dict]) -> Dict[str, Any]:
-        """关键词匹配降级方案（OpenAI 不可用时）。"""
+        """Keyword-matching fallback (when the LLM is unavailable)."""
         blob = answer + "\n" + "\n".join(s.get("content", "") for s in snippets)
 
         status = "uncertain"
         risk_penalty = 0.0
         if any(
             k in blob
-            for k in ["停业", "闭店", "装修", "歇业", "暂停营业", "暂别", "temporarily closed"]
+            for k in ["permanently closed", "temporarily closed", "closed for renovation", "out of business", "shut down"]
         ):
             status = "closed"
             risk_penalty = 0.8
-        elif any(k in blob for k in ["营业中", "正常营业", "open now", "营业时间"]):
+        elif any(k in blob for k in ["open now", "now open", "open today", "business hours"]):
             status = "open"
 
         promo_bonus = (
             0.6
-            if any(k in blob for k in ["优惠", "折扣", "团购", "代金券", "满减", "coupon"])
+            if any(k in blob for k in ["discount", "deal", "coupon", "promo", "happy hour", "special offer"])
             else 0.0
         )
         queue_level = (
             "high"
-            if any(k in blob for k in ["排队", "等位", "wait", "line"])
+            if any(k in blob for k in ["wait", "line", "queue", "busy", "crowded"])
             else "unknown"
         )
         crowd_index = 0.75 if queue_level == "high" else 0.45
@@ -1689,7 +1927,7 @@ class MeetHalfwayRecommender:
         )
         selected = ranked[:limit]
         logger.info(
-            "低成本模式：仅增强前 %d/%d 个候选，其余候选使用默认网页信号。",
+            "Low-cost mode: enriching only the top %d/%d candidates; others use default web signals.",
             len(selected),
             len(candidates),
         )
@@ -1700,17 +1938,20 @@ class MeetHalfwayRecommender:
         candidates: List[CandidateRestaurant],
         city_hint: str,
         year_hint: int = 2026,
-        time_slot: str = "今晚 19:00",
+        time_slot: str = "tonight 19:00",
         party_size: int = 2,
     ) -> None:
         """
-        并发获取所有候选餐厅的网络信号（asyncio.gather 提速 5-10x）。
+        Concurrently fetch web signals for all candidates (asyncio.gather, 5-10x faster).
 
-        零足迹承诺：所有中间数据仅存活于本函数栈帧，不写入磁盘。
+        Zero-footprint: all intermediate data lives only on this stack frame, never written to disk.
         """
-        logger.info("启动并发 Web 信号采集，共 %d 家餐厅 ...", len(candidates))
+        logger.info("Starting concurrent web-signal collection for %d venues ...", len(candidates))
         self._seed_default_web_signals(candidates, "not_enriched")
-        active_candidates = self._pick_candidates_for_enrichment(candidates)
+        # Offline samples already carry demo signals; skip live enrichment to save tokens and
+        # avoid running real web lookups on shifted sample coordinates (misleading results).
+        enrichable = [c for c in candidates if not c.is_sample]
+        active_candidates = self._pick_candidates_for_enrichment(enrichable)
         if not active_candidates:
             return
 
@@ -1742,13 +1983,13 @@ class MeetHalfwayRecommender:
 
         elapsed = time.monotonic() - t0
         logger.info(
-            "并发采集完成 %.2fs（平均 %.2fs/家）",
+            "Concurrent collection done in %.2fs (avg %.2fs/venue)",
             elapsed,
             elapsed / max(len(candidates), 1),
         )
 
     # -----------------------------------------------------------------------
-    # 评分（时间公平性 + 等时线 + 指数惩罚）
+    # Scoring (time fairness + isochrone + exponential penalty)
     # -----------------------------------------------------------------------
     def score_candidates(
         self,
@@ -1768,22 +2009,22 @@ class MeetHalfwayRecommender:
         time_conflict: bool = False,
     ) -> List[CandidateRestaurant]:
         """
-        MCDM 评分 v2：
+        MCDM scoring v2:
 
-        1. 时间公平性替代距离公平性
-           - 用行程分钟数代替公里差
-           - 指数惩罚：时间差 > 20 分钟时分数呈指数级下降
+        1. Time fairness instead of distance fairness
+           - use travel minutes instead of km difference
+           - exponential penalty: score drops sharply once the gap exceeds ~20 min
              penalty = exp(|ta - tb| / 10) - 1
 
-        2. 等时线归属奖惩
-           - 在交集内：+0.4 分奖励
-           - 在交集外：-0.6 分惩罚
+        2. Isochrone-membership reward/penalty
+           - inside the intersection: +0.4 bonus
+           - outside the intersection: -0.6 penalty
 
-        3. 疲劳度参数（tired_person='a'|'b'）
-           - 疲劳方的行程时间系数上调 1.3，中心点自动向其倾斜
+        3. Fatigue parameter (tired_person='a'|'b')
+           - the tired side's travel-time factor is scaled by 1.3 and the center leans toward them
         """
         max_center_dist = max((c.distance_to_center_km for c in candidates), default=1.0) or 1.0
-        active_slots = time_slots or ["灵活"]
+        active_slots = time_slots or ["flexible"]
 
         a_fatigue = 1.3 if tired_person == "a" else 1.0
         b_fatigue = 1.3 if tired_person == "b" else 1.0
@@ -1800,7 +2041,7 @@ class MeetHalfwayRecommender:
                 self._travel_minutes(a, rest) - self._travel_minutes(b, rest)
             )
 
-            # 核心：时间差指数惩罚（避免"一人走 5 分钟，另一人走 50 分钟"极端不公平）
+            # Core: exponential time-gap penalty (avoid extreme unfairness like 5 min vs 50 min)
             time_gap = abs(ta_min - tb_min)
             fairness_penalty = math.exp(time_gap / 10.0) - 1.0  # 0 when perfectly fair
             fairness_balance = _clip01(1.0 - time_gap / max(ta_min + tb_min, 1.0))
@@ -1852,7 +2093,7 @@ class MeetHalfwayRecommender:
             crowd_index = min(max(float(c.web_signals.get("crowd_index", 0.5)), 0.0), 1.0)
             wait_minutes = max(float(c.web_signals.get("estimated_wait_minutes", 0.0)), 0.0)
             crowd_penalty = max(queue_penalty, crowd_index * 0.22 + min(wait_minutes / 180.0, 0.25))
-            # 人气/密度在中高水平较优：过冷与过热都扣分
+            # Mid-high popularity/density is best: too cold or too hot both lose points
             density_balance = _clip01(1.0 - abs(crowd_index - 0.55) / 0.55)
             c.venue_popularity_score = _clip01(0.55 * rating_component + 0.45 * density_balance)
             iso_bonus = 0.4 if c.in_isochrone_intersection else -0.6
@@ -1892,7 +2133,7 @@ class MeetHalfwayRecommender:
             }
 
             logger.debug(
-                "评分 %-20s | dist=%.2f rat=%.2f fair=%.2f radius=%.2f avail=%.2f "
+                "score %-20s | dist=%.2f rat=%.2f fair=%.2f radius=%.2f avail=%.2f "
                 "vote=%.2f tVote=%.2f pop=%.2f iso=%+.1f web(%+.2f/-%0.2f) crowd=-%.2f delta=%.1fmin -> %.3f",
                 c.name[:20],
                 dist_component,
@@ -1915,7 +2156,7 @@ class MeetHalfwayRecommender:
         return candidates
 
     # -----------------------------------------------------------------------
-    # AI 推荐文本生成
+    # AI recommendation text generation
     # -----------------------------------------------------------------------
     def generate_recommendation_text(
         self,
@@ -1925,13 +2166,13 @@ class MeetHalfwayRecommender:
         top_items: List[CandidateRestaurant],
         budget: float,
         cuisine: str,
-        time_slot: str = "今晚 19:00",
+        time_slot: str = "tonight 19:00",
         party_size: int = 2,
         venue_type: str = "restaurant",
     ) -> str:
-        venue_display = VENUE_TYPES.get(venue_type, {}).get("display", "场所")
+        venue_display = VENUE_TYPES.get(venue_type, {}).get("display", "venue")
         if not top_items:
-            return f"未找到合适候选{venue_display}，请扩大搜索范围或调整关键词。"
+            return f"No suitable {venue_display} candidates found. Try widening the search or adjusting keywords."
 
         structured = [
             {
@@ -1961,36 +2202,36 @@ class MeetHalfwayRecommender:
 
         def _build_local_summary() -> str:
             lines = [
-                f"推荐类型: {venue_display}（{cuisine}），预算: 人均{budget}元。",
-                f"目标场景: {time_slot}，{party_size}人。",
-                f"均衡中心点: ({center.lat:.6f}, {center.lon:.6f})",
-                "推荐结果:",
+                f"Type: {venue_display} ({cuisine}). Budget: ${budget} per person.",
+                f"Scenario: {time_slot}, {party_size} people.",
+                f"Fair center: ({center.lat:.6f}, {center.lon:.6f})",
+                "Recommendations:",
             ]
             for i, item in enumerate(structured, start=1):
-                iso_tag = "等时线内" if item["in_isochrone_zone"] else "边缘区"
+                iso_tag = "in shared area" if item["in_isochrone_zone"] else "edge"
                 lines.append(
-                    f"{i}. [{iso_tag}] {item['name']} | 分数 {item['score']} "
-                    f"| 时间差 {item['fairness_delta_minutes']} 分 | 状态 {item['status']} "
-                    f"| 协商时间 {item['best_time_slot']} | 等位 {item['wait_minutes']} 分"
+                    f"{i}. [{iso_tag}] {item['name']} | score {item['score']} "
+                    f"| gap {item['fairness_delta_minutes']} min | status {item['status']} "
+                    f"| time {item['best_time_slot']} | wait {item['wait_minutes']} min"
                 )
             return "\n".join(lines)
 
-        # 无 OpenAI 或关闭 LLM 摘要时，使用本地模板汇总
+        # When no LLM is configured / summary is off, build a local template summary
         if not self.use_llm_summary or not self._openai_ok or not self.openai_key:
             return _build_local_summary()
 
         prompt = {
-            "task": f"根据候选{venue_display}结构化数据，输出简洁可执行的双人见面推荐（中文）",
+            "task": f"From the structured {venue_display} candidate data, produce a concise, actionable meeting recommendation (in English).",
             "constraints": [
-                f"优先推荐 in_isochrone_zone=true 的{venue_display}（双方均在合理通勤时间内）",
-                "剔除 status=closed 或 risk_penalty>0.5 的候选",
-                "强调时间公平性（fairness_delta_minutes 越小越好，差值>20分钟须警告）",
-                "指出是否有优惠活动和排队风险",
-                "明确该时间段与人数下的人流量与等位风险（低/中/高 + 预计分钟）",
-                "给出最终前3名，每条附一句理由和具体行动建议",
-                "除店名、品牌名、英文地址外，其余说明必须全部使用简体中文",
-                "不要输出英文标题、英文项目符号、英文行动提示或中英混杂句式",
-                "输出完整内容，不要在句子中间截断",
+                f"Prefer {venue_display} with in_isochrone_zone=true (both within reasonable travel time)",
+                "Drop candidates with status=closed or risk_penalty>0.5",
+                "Emphasize travel-time fairness (smaller fairness_delta_minutes is better; warn if >20 min)",
+                "Note any promotions and queue/wait risk",
+                "State crowd level and wait risk for the time slot and party size (low/medium/high + estimated minutes)",
+                "Give a final top 3, each with one-line reasoning and a concrete action suggestion",
+                "Write all explanatory text in clear English",
+                "Keep the output clean and consistent; avoid mixed-language phrasing",
+                "Output complete content; do not cut off mid-sentence",
             ],
             "input": {
                 "person_a": {"lat": a.lat, "lon": a.lon},
@@ -2012,7 +2253,7 @@ class MeetHalfwayRecommender:
                 messages=[
                     {
                         "role": "system",
-                        "content": "你是城市约会顾问。请始终使用自然、流畅的简体中文输出；除餐厅专有名称外，不要使用英文。请直接给出适合网页展示的中文推荐文案，避免中英混写，避免句子截断。",
+                        "content": "You are an urban meet-up advisor. Always reply in natural, fluent English. Produce web-ready recommendation copy, avoid mid-sentence truncation.",
                     },
                     {
                         "role": "user",
@@ -2022,9 +2263,9 @@ class MeetHalfwayRecommender:
                 temperature=0.2,
                 max_tokens=380 if self.low_cost_mode else 700,
             )
-            return resp.choices[0].message.content or "模型未返回文本。"
+            return resp.choices[0].message.content or "Model returned no text."
         except Exception as exc:
-            logger.error("OpenAI 推荐生成失败: %s", exc)
+            logger.error("OpenAI recommendation generation failed: %s", exc)
             return _build_local_summary()
 
     def build_explanations(
@@ -2033,62 +2274,55 @@ class MeetHalfwayRecommender:
         top_k: int = 5,
     ) -> Dict[str, str]:
         """
-        为 Top 候选生成“为什么推荐这个时间+地点”的自然语言解释。
+        Generate a natural-language "why this time + place" explanation for each top candidate.
 
-        解释逻辑与评分项一一对应：
+        The explanation maps one-to-one onto the score components:
         - radius_tolerance_score
         - availability_overlap
         - venue_popularity_score
         - mutual_vote_score
         - time_vote_score
         """
+        def _level(value: float, hi: float, mid: float) -> str:
+            return "high" if value >= hi else "medium" if value >= mid else "low"
+
         explanations: Dict[str, str] = {}
         selected = candidates[: max(1, top_k)]
 
         for idx, c in enumerate(selected, start=1):
-            iso_text = "位于双方可达交集内" if c.in_isochrone_intersection else "位于可达边缘区"
+            iso_text = "inside the shared reachable area" if c.in_isochrone_intersection else "on the edge of the reachable area"
 
-            radius_level = (
-                "高" if c.radius_tolerance_score >= 0.75 else "中" if c.radius_tolerance_score >= 0.45 else "低"
-            )
-            overlap_level = (
-                "高" if c.availability_overlap >= 0.75 else "中" if c.availability_overlap >= 0.35 else "低"
-            )
-            popularity_level = (
-                "高" if c.venue_popularity_score >= 0.7 else "中" if c.venue_popularity_score >= 0.45 else "低"
-            )
-            vote_level = (
-                "高" if c.mutual_vote_score >= 0.7 else "中" if c.mutual_vote_score >= 0.45 else "低"
-            )
-            t_vote_level = (
-                "高" if c.time_vote_score >= 0.7 else "中" if c.time_vote_score >= 0.45 else "低"
-            )
+            radius_level = _level(c.radius_tolerance_score, 0.75, 0.45)
+            overlap_level = _level(c.availability_overlap, 0.75, 0.35)
+            popularity_level = _level(c.venue_popularity_score, 0.7, 0.45)
+            vote_level = _level(c.mutual_vote_score, 0.7, 0.45)
+            t_vote_level = _level(c.time_vote_score, 0.7, 0.45)
 
-            slot_text = c.best_time_slot or "灵活时段"
+            slot_text = c.best_time_slot or "flexible time"
             wait_text = int(float(c.web_signals.get("estimated_wait_minutes", 0) or 0))
             queue_text = str(c.web_signals.get("queue_level", "unknown"))
 
             lines = [
-                f"Top{idx} 推荐 {c.name}（建议时间：{slot_text}）。",
-                f"空间公平性：{iso_text}，双方通勤容忍匹配度{radius_level}（{c.radius_tolerance_score:.2f}），当前时间差约{c.fairness_delta_minutes:.1f}分钟。",
-                f"时间协商：双方可用时间重叠度{overlap_level}（{c.availability_overlap:.2f}），该时段联合投票偏好{t_vote_level}（{c.time_vote_score:.2f}）。",
-                f"偏好一致性：地点互选偏好{vote_level}（{c.mutual_vote_score:.2f}）。",
-                f"场地状态：热度/密度适配度{popularity_level}（{c.venue_popularity_score:.2f}），排队{queue_text}，预计等位{wait_text}分钟。",
-                f"综合结论：该候选在“地点+时间”双维度上更平衡，因此进入前列（总分 {c.final_score:.3f}）。",
+                f"#{idx} recommendation: {c.name} (suggested time: {slot_text}).",
+                f"Spatial fairness: {iso_text}; commute-tolerance match is {radius_level} ({c.radius_tolerance_score:.2f}); current time gap ~{c.fairness_delta_minutes:.1f} min.",
+                f"Time negotiation: shared-availability overlap is {overlap_level} ({c.availability_overlap:.2f}); joint time-vote preference for this slot is {t_vote_level} ({c.time_vote_score:.2f}).",
+                f"Preference alignment: mutual venue-vote preference is {vote_level} ({c.mutual_vote_score:.2f}).",
+                f"Venue state: popularity/density fit is {popularity_level} ({c.venue_popularity_score:.2f}); queue {queue_text}; estimated wait {wait_text} min.",
+                f"Overall: this candidate is more balanced across both place and time, so it ranks near the top (total score {c.final_score:.3f}).",
             ]
             explanations[c.name] = "\n".join(lines)
 
         return explanations
 
     # -----------------------------------------------------------------------
-    # Surprise Me 惊喜模式
+    # Surprise Me mode
     # -----------------------------------------------------------------------
     def pick_surprise(
         self, candidates: List[CandidateRestaurant]
     ) -> Optional[CandidateRestaurant]:
         """
-        从高分候选中随机挑选一家，绕过 Top1，打破信息茧房。
-        条件：score > 0.5，在等时线内，非停业状态。
+        Randomly pick a high-scoring candidate (skipping Top 1) to break the filter bubble.
+        Conditions: score > 0.5, inside the isochrone, not closed.
         """
         eligible = [
             c
@@ -2102,7 +2336,7 @@ class MeetHalfwayRecommender:
         return random.choice(eligible) if eligible else None
 
     # -----------------------------------------------------------------------
-    # 交互式地图（folium）
+    # Interactive map (folium)
     # -----------------------------------------------------------------------
     def generate_map(
         self,
@@ -2115,46 +2349,68 @@ class MeetHalfwayRecommender:
         surprise: Optional[CandidateRestaurant] = None,
         top_k: int = 5,
         show_user_points: bool = True,
+        iso_a: Optional[Any] = None,
+        iso_b: Optional[Any] = None,
     ) -> str:
         if not HAS_FOLIUM:
-            logger.warning("folium 未安装 — 跳过地图生成。")
+            logger.warning("folium not installed - skipping map generation.")
             return ""
 
         m = folium.Map(location=[center.lat, center.lon], zoom_start=14)
 
-        # 等时线交集覆盖层
+        # Each person's reachable isochrone (R_A / R_B), visualizing "meet halfway" fairness
+        if HAS_SHAPELY:
+            for iso, color, label in [
+                (iso_a, "#2563eb", "A reachable isochrone (R_A)"),
+                (iso_b, "#dc2626", "B reachable isochrone (R_B)"),
+            ]:
+                if iso is None or getattr(iso, "is_empty", True):
+                    continue
+                try:
+                    folium.GeoJson(
+                        mapping(iso),
+                        style_function=(lambda col: (lambda _f: {
+                            "fillColor": col, "color": col, "weight": 2,
+                            "fillOpacity": 0.08, "dashArray": "4,4",
+                        }))(color),
+                        tooltip=label,
+                    ).add_to(m)
+                except Exception as exc:
+                    logger.warning("Failed to render an individual isochrone: %s", exc)
+
+        # Isochrone intersection layer (shared reachable area R_A ∩ R_B)
         if HAS_SHAPELY and intersection is not None and not intersection.is_empty:
             try:
                 folium.GeoJson(
                     mapping(intersection),
                     style_function=lambda _: {
-                        "fillColor": "#3399ff",
-                        "color": "#0066cc",
-                        "weight": 2,
-                        "fillOpacity": 0.15,
+                        "fillColor": "#10b981",
+                        "color": "#0f9d76",
+                        "weight": 3,
+                        "fillOpacity": 0.28,
                     },
-                    tooltip="等时线交集（A、B 双方均可合理到达的区域）",
+                    tooltip="Isochrone intersection R_A ∩ R_B (area both A and B can reasonably reach)",
                 ).add_to(m)
             except Exception as exc:
-                logger.warning("等时线渲染失败: %s", exc)
+                logger.warning("Failed to render the isochrone: %s", exc)
 
-        # 出发地 A / B
+        # Start points A / B
         if show_user_points:
-            for loc, label, color in [(a, "出发地 A", "blue"), (b, "出发地 B", "red")]:
+            for loc, label, color in [(a, "Start A", "blue"), (b, "Start B", "red")]:
                 folium.Marker(
                     [loc.lat, loc.lon],
                     tooltip=label,
                     icon=folium.Icon(color=color, icon="user", prefix="fa"),
                 ).add_to(m)
 
-        # 均衡中心点
+        # Fair center
         folium.Marker(
             [center.lat, center.lon],
-            tooltip="均衡中心点",
+            tooltip="Fair center",
             icon=folium.Icon(color="purple", icon="map-marker", prefix="fa"),
         ).add_to(m)
 
-        # 候选餐厅
+        # Candidate venues
         top_names = {c.name for c in candidates[:top_k]}
         surprise_name = surprise.name if surprise else ""
         for c in candidates:
@@ -2168,9 +2424,9 @@ class MeetHalfwayRecommender:
             iso_tag = "✓" if c.in_isochrone_intersection else "△"
             tip = (
                 f"{iso_tag} {c.name}<br>"
-                f"分数: {c.final_score:.3f}<br>"
-                f"时间差: {c.fairness_delta_minutes:.1f} 分钟<br>"
-                f"状态: {c.web_signals.get('status', '?')}<br>"
+                f"score: {c.final_score:.3f}<br>"
+                f"gap: {c.fairness_delta_minutes:.1f} min<br>"
+                f"status: {c.web_signals.get('status', '?')}<br>"
                 f"{c.web_signals.get('reason', '')}"
             )
             if c.name == surprise_name:
@@ -2183,7 +2439,7 @@ class MeetHalfwayRecommender:
             ).add_to(m)
 
         m.save(output_path)
-        logger.info("交互地图已保存: %s", output_path)
+        logger.info("Interactive map saved: %s", output_path)
         return output_path
 
 
@@ -2192,75 +2448,76 @@ class MeetHalfwayRecommender:
 # ---------------------------------------------------------------------------
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="MeetHalfway AI v2 — 等时线交集 · LLM语义提取 · 零足迹",
+        description="MeetHalfway AI v2 - isochrone intersection, LLM semantic extraction, zero-footprint",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    parser.add_argument("--a-lat", type=float, help="出发地 A 纬度")
-    parser.add_argument("--a-lon", type=float, help="出发地 A 经度")
-    parser.add_argument("--b-lat", type=float, help="出发地 B 纬度")
-    parser.add_argument("--b-lon", type=float, help="出发地 B 经度")
-    parser.add_argument("--a-address", type=str, default="", help="出发地 A 地址（可替代坐标）")
-    parser.add_argument("--b-address", type=str, default="", help="出发地 B 地址（可替代坐标）")
-    parser.add_argument("--cuisine", type=str, default="hotpot", help="菜系关键词")
-    parser.add_argument("--budget", type=float, default=80, help="人均预算（元）")
+    parser.add_argument("--a-lat", type=float, help="Start A latitude")
+    parser.add_argument("--a-lon", type=float, help="Start A longitude")
+    parser.add_argument("--b-lat", type=float, help="Start B latitude")
+    parser.add_argument("--b-lon", type=float, help="Start B longitude")
+    parser.add_argument("--a-address", type=str, default="", help="Start A address (alternative to coordinates)")
+    parser.add_argument("--b-address", type=str, default="", help="Start B address (alternative to coordinates)")
+    parser.add_argument("--cuisine", type=str, default="hotpot", help="Cuisine keyword")
+    parser.add_argument("--budget", type=float, default=80, help="Budget per person")
     parser.add_argument(
         "--venue-type",
         type=str,
         default="restaurant",
         choices=sorted(VENUE_TYPES.keys()),
-        help="场所类型（restaurant/cafe/park/mall/cinema/...）",
+        help="Venue type (restaurant/cafe/park/mall/cinema/...)",
     )
     parser.add_argument(
         "--transport",
         type=str,
         default="transit",
         choices=["drive", "walk", "transit"],
-        help="出行方式",
+        help="Travel mode",
     )
-    parser.add_argument("--top-k", type=int, default=5, help="最终推荐数量")
+    parser.add_argument("--top-k", type=int, default=5, help="Number of final recommendations")
     parser.add_argument(
-        "--weight-a", type=float, default=1.0, help="A 的优先权重（越高中心越靠近 A）"
+        "--weight-a", type=float, default=1.0, help="A priority weight (higher pulls center toward A)"
     )
-    parser.add_argument("--weight-b", type=float, default=1.0, help="B 的优先权重")
+    parser.add_argument("--weight-b", type=float, default=1.0, help="B priority weight")
     parser.add_argument(
         "--tired",
         type=str,
         default="",
         choices=["", "a", "b"],
-        help="疲劳方（自动调高其权重使中心点向其倾斜）",
+        help="Tired participant (auto-raises their weight so the center leans toward them)",
     )
     parser.add_argument(
-        "--isochrone-minutes", type=int, default=20, help="等时线时间阈值（分钟）"
+        "--isochrone-minutes", type=int, default=20, help="Isochrone time budget (minutes)"
     )
-    parser.add_argument("--city", type=str, default="", help="城市名称（用于搜索上下文）")
-    parser.add_argument("--time-slot", type=str, default="今晚 19:00", help="目标就餐时间段")
-    parser.add_argument("--party-size", type=int, default=2, help="就餐人数")
-    parser.add_argument("--low-cost", action="store_true", help="免费额度测试模式：减少候选数和模型调用")
-    parser.add_argument("--enable-yelp", action="store_true", help="启用 Yelp 增强（会更慢）")
-    parser.add_argument("--enable-llm-summary", action="store_true", help="启用 LLM 最终总结")
+    parser.add_argument("--city", type=str, default="", help="City name (search context)")
+    parser.add_argument("--time-slot", type=str, default="tonight 19:00", help="Target time slot")
+    parser.add_argument("--party-size", type=int, default=2, help="Party size")
+    parser.add_argument("--low-cost", action="store_true", help="Low-cost test mode: fewer candidates and model calls")
+    parser.add_argument("--enable-yelp", action="store_true", help="Enable Yelp enrichment (slower)")
+    parser.add_argument("--enable-llm-summary", action="store_true", help="Enable the final LLM summary")
     parser.add_argument(
         "--max-enriched-candidates",
         type=int,
         default=0,
-        help="仅增强前 N 个候选（0 表示按模式自动决定）",
+        help="Enrich only the top N candidates (0 = auto by mode)",
     )
-    parser.add_argument("--json", action="store_true", help="输出机器可读 JSON")
-    parser.add_argument("--map", action="store_true", help="生成 folium 交互地图 HTML")
+    parser.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+    parser.add_argument("--map", action="store_true", help="Generate an interactive folium map (HTML)")
     parser.add_argument(
-        "--map-output", type=str, default="meethalfway_map.html", help="地图输出路径"
+        "--map-output", type=str, default="meethalfway_map.html", help="Map output path"
     )
     parser.add_argument(
-        "--surprise", action="store_true", help="惊喜模式：推荐一家高分冷门餐厅"
+        "--surprise", action="store_true", help="Surprise mode: suggest a high-scoring under-the-radar venue"
     )
-    parser.add_argument("--verbose", action="store_true", help="输出 DEBUG 级别日志")
+    parser.add_argument("--verbose", action="store_true", help="Enable DEBUG-level logging")
     return parser.parse_args()
 
 
 # ---------------------------------------------------------------------------
-# 主入口（async）
+# Main entry (async)
 # ---------------------------------------------------------------------------
 async def async_main(args: argparse.Namespace) -> None:
-    load_dotenv()
+    # Resolve .env next to this module so CLI runs work from any directory.
+    load_dotenv(Path(__file__).with_name(".env"))
 
     if args.verbose:
         logging.getLogger("meethalfway").setLevel(logging.DEBUG)
@@ -2282,7 +2539,7 @@ async def async_main(args: argparse.Namespace) -> None:
     )
 
     if not tavily_key:
-        logger.info("未配置 TAVILY_API_KEY：将自动使用 DuckDuckGo 无 Key 搜索降级。")
+        logger.info("TAVILY_API_KEY not set: falling back to keyless DuckDuckGo search.")
 
     engine = MeetHalfwayRecommender(
         mapbox_token=mapbox_token,
@@ -2314,30 +2571,30 @@ async def async_main(args: argparse.Namespace) -> None:
             loc = engine.geocode_address(address=address, city_hint=args.city.strip())
             if loc is not None:
                 return loc
-            raise RuntimeError(f"{person_name} 地址解析失败，请补充更具体地址或改用经纬度。")
+            raise RuntimeError(f"{person_name}: address lookup failed; provide a more specific address or use coordinates.")
 
         raise RuntimeError(
-            f"{person_name} 缺少位置信息：请提供经纬度(--{person_name.lower()}-lat/--{person_name.lower()}-lon)"
-            f"或地址(--{person_name.lower()}-address)。"
+            f"{person_name}: missing location. Provide coordinates (--{person_name.lower()}-lat/--{person_name.lower()}-lon)"
+            f" or an address (--{person_name.lower()}-address)."
         )
 
     a = _resolve_location(args.a_lat, args.a_lon, args.a_address, "A")
     b = _resolve_location(args.b_lat, args.b_lon, args.b_address, "B")
 
-    # Step 1: 加权中点（初始种子）
+    # Step 1: weighted midpoint (initial seed)
     center = engine.compute_weighted_midpoint(a, b, args.weight_a, args.weight_b)
-    logger.info("加权中心点: (%.6f, %.6f)", center.lat, center.lon)
+    logger.info("Weighted center: (%.6f, %.6f)", center.lat, center.lon)
 
-    # Step 2: 等时线（A 和 B 各一个多边形）
-    logger.info("获取等时线多边形 (%d 分钟, %s) ...", args.isochrone_minutes, args.transport)
+    # Step 2: isochrones (one polygon each for A and B)
+    logger.info("Fetching isochrone polygons (%d min, %s) ...", args.isochrone_minutes, args.transport)
     iso_a = engine.get_isochrone(a)
     iso_b = engine.get_isochrone(b)
     intersection = engine.compute_intersection(iso_a, iso_b)
 
-    # Step 2b: 从交集中剔除水体、森林等不可实际抵达的自然地物
+    # Step 2b: subtract water/forest and other unreachable natural features from the intersection
     intersection = engine.subtract_natural_barriers(intersection)
 
-    # Step 3: 搜索附近餐厅
+    # Step 3: search nearby venues
     limit = engine.recommend_search_limit(args.top_k)
     raw_candidates = engine.search_nearby_venues(
         center=center,
@@ -2347,22 +2604,22 @@ async def async_main(args: argparse.Namespace) -> None:
     )
 
     if not raw_candidates:
-        venue_display = VENUE_TYPES.get(args.venue_type, {}).get("display", "场所")
-        print(f"未找到任何候选{venue_display}，请检查坐标或关键词。")
+        venue_display = VENUE_TYPES.get(args.venue_type, {}).get("display", "venue")
+        print(f"No {venue_display} candidates found. Check the coordinates or keywords.")
         return
 
-    # Step 4: 等时线交集标记
+    # Step 4: tag isochrone-intersection membership
     engine.tag_with_isochrone(raw_candidates, intersection)
 
-    # Step 4b: 人流密度 Hard Filter — 剔除 POI 密度不足的偏僻候选
+    # Step 4b: POI-density hard filter - drop isolated, low-density candidates
     raw_candidates = engine.filter_by_poi_density(raw_candidates)
     if not raw_candidates:
-        venue_display = VENUE_TYPES.get(args.venue_type, {}).get("display", "场所")
-        print(f"POI 密度过滤后无候选{venue_display}，请调整地点或关键词。")
+        venue_display = VENUE_TYPES.get(args.venue_type, {}).get("display", "venue")
+        print(f"No {venue_display} candidates after POI-density filtering. Adjust the location or keywords.")
         return
 
-    # Step 5: 并发 Web 采集 + LLM 语义提取（零足迹：数据不落盘）
-    city_hint = args.city.strip() or "本地"
+    # Step 5: concurrent web collection + LLM extraction (zero-footprint: nothing written to disk)
+    city_hint = args.city.strip() or "local area"
     await engine.enrich_all_async(
         raw_candidates,
         city_hint=city_hint,
@@ -2371,7 +2628,7 @@ async def async_main(args: argparse.Namespace) -> None:
         party_size=max(1, args.party_size),
     )
 
-    # Step 6: 评分排序
+    # Step 6: score and rank
     tired_person = args.tired.lower() if args.tired else None
     scored = engine.score_candidates(
         a, b, center, raw_candidates,
@@ -2380,10 +2637,10 @@ async def async_main(args: argparse.Namespace) -> None:
     )
     top_items = scored[: args.top_k]
 
-    # Step 7: 惊喜推荐
+    # Step 7: surprise pick
     surprise_pick = engine.pick_surprise(scored) if args.surprise else None
 
-    # Step 8: AI 推荐文本
+    # Step 8: AI recommendation text
     summary = engine.generate_recommendation_text(
         a,
         b,
@@ -2396,7 +2653,7 @@ async def async_main(args: argparse.Namespace) -> None:
         venue_type=args.venue_type,
     )
 
-    # Step 9: 地图
+    # Step 9: map
     map_path = ""
     if args.map:
         map_path = engine.generate_map(
@@ -2404,14 +2661,16 @@ async def async_main(args: argparse.Namespace) -> None:
             output_path=args.map_output,
             surprise=surprise_pick,
             top_k=args.top_k,
+            iso_a=iso_a,
+            iso_b=iso_b,
         )
 
-    # 构建结果字典
+    # Build the result dict
     result = {
         "meta": {
             "version": "2.0",
             "algorithm": "Mapbox Isochrone Intersection + GPT-4o-mini semantic extraction + exponential fairness penalty",
-            "privacy": "零足迹设计：用户 GPS 坐标仅存活于内存计算栈，函数返回后即销毁，不做任何形式的持久化存储。",
+            "privacy": "Zero-footprint design: user GPS coordinates live only on the in-memory call stack and are discarded on return; never persisted.",
         },
         "inputs": {
             "a": {"lat": a.lat, "lon": a.lon},
@@ -2466,27 +2725,27 @@ async def async_main(args: argparse.Namespace) -> None:
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return
 
-    # 人类可读输出
+    # Human-readable output
     print("=" * 72)
-    print("MeetHalfway AI v2 — 推荐结果")
+    print("MeetHalfway AI v2 - Recommendations")
     print("=" * 72)
-    venue_display = VENUE_TYPES.get(args.venue_type, {}).get("display", "场所")
-    print(f"场所类型    : {venue_display}")
-    print(f"均衡中心点  : ({center.lat:.6f}, {center.lon:.6f})")
+    venue_display = VENUE_TYPES.get(args.venue_type, {}).get("display", "venue")
+    print(f"Venue type   : {venue_display}")
+    print(f"Fair center  : ({center.lat:.6f}, {center.lon:.6f})")
     print(
-        f"等时线交集  : {'已启用 (Mapbox Isochrone)' if intersection is not None else '降级为半径近似模式'}"
+        f"Shared area  : {'enabled (isochrone intersection)' if intersection is not None else 'radius approximation fallback'}"
     )
-    print(f"Web 采集    : {'LLM 语义提取 (GPT-4o-mini)' if engine._openai_ok else '关键词匹配降级'}")
-    print(f"候选总数    : {len(scored)}，展示 Top {len(top_items)}")
+    print(f"Web signals  : {'LLM extraction' if engine._openai_ok else 'keyword fallback'}")
+    print(f"Candidates   : {len(scored)}, showing top {len(top_items)}")
     print("-" * 72)
     for i, item in enumerate(result["top_candidates"], start=1):
-        iso_tag = "等时线内" if item["in_isochrone_zone"] else "边缘区"
+        iso_tag = "in shared area" if item["in_isochrone_zone"] else "edge"
         ws = item["web_signals"]
         print(
             f"{i}. [{iso_tag}] {item['name']}\n"
-            f"   score={item['final_score']}  时间差={item['fairness_delta_minutes']}分  "
-            f"状态={ws.get('status')}  置信={ws.get('confidence', '?')}  "
-            f"原因={ws.get('reason', '-')}"
+            f"   score={item['final_score']}  gap={item['fairness_delta_minutes']}min  "
+            f"status={ws.get('status')}  confidence={ws.get('confidence', '?')}  "
+            f"reason={ws.get('reason', '-')}"
         )
     if surprise_pick:
         print("-" * 72)
@@ -2494,14 +2753,21 @@ async def async_main(args: argparse.Namespace) -> None:
             f"[Surprise Pick] {surprise_pick.name}  (score={round(surprise_pick.final_score, 4)})"
         )
     print("-" * 72)
-    print("AI 推荐摘要:")
+    print("AI recommendation summary:")
     print(result["summary"])
     if map_path:
-        print(f"\n交互地图已保存: {map_path}")
-    print("\n[零足迹声明] 本次计算已完成，用户位置数据未做任何持久化存储。")
+        print(f"\nInteractive map saved: {map_path}")
+    print("\n[Zero-footprint] Computation complete; no user location data was persisted.")
 
 
 def main() -> None:
+    # Windows consoles default to GBK; printing JSON with emoji/special chars raises UnicodeEncodeError.
+    # Force stdout/stderr to UTF-8 so the CLI doesn't crash on Chinese-locale Windows.
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8")  # type: ignore[union-attr]
+        except Exception:
+            pass
     args = parse_args()
     asyncio.run(async_main(args))
 
