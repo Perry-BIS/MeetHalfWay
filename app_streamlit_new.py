@@ -108,18 +108,25 @@ def _utc_timestamp() -> str:
 
 
 def _normalize_user_role(user_role: str) -> str:
-    # P1~P5 keys, backward-compatible with legacy A/B
-    role = str(user_role or "").strip().upper()
+    # P1~P5 keys, backward-compatible with legacy A/B and "Person N" display labels
+    raw = str(user_role or "").strip()
+    role = raw.upper()
     if role in {"A", "B"}:
         return role
     if role.startswith("P") and role[1:].isdigit():
         idx = int(role[1:])
-        if 1 <= idx <= 5:
+        if 1 <= idx <= MAX_PARTICIPANTS:
+            return f"P{idx}"
+    # "Person 1" / "PERSON  2" / "person-3" display labels → P{N}
+    person_match = re.match(r"^PERSON[\s_\-]*([1-9]\d*)$", role)
+    if person_match:
+        idx = int(person_match.group(1))
+        if 1 <= idx <= MAX_PARTICIPANTS:
             return f"P{idx}"
     # numeric compatibility
-    if role.isdigit() and 1 <= int(role) <= 5:
+    if role.isdigit() and 1 <= int(role) <= MAX_PARTICIPANTS:
         return f"P{int(role)}"
-    # default A/B mapping
+    # default A/B mapping (legacy two-person flow)
     if role.endswith("A"):
         return "P1"
     if role.endswith("B"):
@@ -394,6 +401,71 @@ def _render_distance_tolerance_preview(
     )
 
 
+def _render_detected_location_preview_map(
+    lat: float,
+    lon: float,
+    *,
+    accuracy_meters: float = 0,
+    address: str = "",
+    map_key: str,
+    title: str = "Detected location",
+) -> None:
+    """Show the detected location with a marker popup and accuracy circle."""
+    lat = float(lat)
+    lon = float(lon)
+    accuracy_meters = max(0.0, float(accuracy_meters or 0))
+    address_text = address.strip() if address else "Address not available yet"
+
+    preview_map = folium.Map(location=[lat, lon], zoom_start=16, tiles="cartodbpositron")
+    if accuracy_meters > 0:
+        folium.Circle(
+            location=[lat, lon],
+            radius=accuracy_meters,
+            color="#377dff",
+            weight=2,
+            fill=True,
+            fill_color="#377dff",
+            fill_opacity=0.12,
+            tooltip=f"Accuracy radius: about {accuracy_meters:.0f} m",
+        ).add_to(preview_map)
+
+    popup_lines = [
+        f"<strong>{html.escape(title)}</strong>",
+        f"{lat:.5f}, {lon:.5f}",
+        html.escape(address_text),
+    ]
+    if accuracy_meters > 0:
+        popup_lines.append(f"Accuracy: about {accuracy_meters:.0f} m")
+
+    folium.Marker(
+        location=[lat, lon],
+        popup=folium.Popup("<br/>".join(popup_lines), max_width=320, show=True),
+        tooltip=title,
+        icon=folium.Icon(color="blue", icon="map-marker"),
+    ).add_to(preview_map)
+
+    if accuracy_meters > 0:
+        display_radius = max(120.0, min(accuracy_meters, 5000.0))
+        lat_offset = display_radius / 111320.0
+        lon_scale = max(math.cos(math.radians(lat)), 0.2)
+        lon_offset = display_radius / (111320.0 * lon_scale)
+        preview_map.fit_bounds(
+            [
+                [lat - lat_offset, lon - lon_offset],
+                [lat + lat_offset, lon + lon_offset],
+            ]
+        )
+
+    st_folium(
+        preview_map,
+        width=None,
+        height=360,
+        key=map_key,
+        use_container_width=True,
+        returned_objects=[],
+    )
+
+
 def _render_radius_selector_block(
     location: Optional[Location],
     distance_miles: int,
@@ -522,6 +594,7 @@ def build_engine_from_env(
         openai_key=openai_key,
         openai_model=model_name,
         openai_base=openai_base,
+        foursquare_api_key=os.getenv("FOURSQUARE_API_KEY", "").strip() or None,
         transport=transport,
         isochrone_minutes=isochrone_minutes,
         use_yelp=use_yelp,
@@ -1507,12 +1580,13 @@ def _compute_room_recommendations(room_id: str) -> Dict[str, Any]:
     region_polys: list = [None] * len(loc_objs)
 
     # Primary feasibility mechanism (paper §3.1): real travel-time isochrones,
-    # each participant's budget derived from their distance tolerance + mode.
-    minutes_list = [
-        max(5, int(round(_distance_miles_to_minutes(p.get("distance_miles", 15), p.get("travel_mode")))))
+    # each participant's reachable polygon is sized directly from their mile slider
+    # (range_type=distance in ORS) so the map geometry matches the UI promise.
+    miles_list = [
+        min(75.0, max(0.5, float(p.get("distance_miles", 15) or 15)))
         for p in all_prefs
     ]
-    iso_area = engine.get_multi_isochrone_search_area(loc_objs, minutes_list=minutes_list, transport=transport)
+    iso_area = engine.get_multi_isochrone_search_area(loc_objs, miles_list=miles_list, transport=transport)
     if iso_area.get("overlap_exists") and iso_area.get("geometry") is not None:
         intersection = iso_area["geometry"]
         area_mode = "isochrone"
@@ -1579,12 +1653,15 @@ def _compute_room_recommendations(room_id: str) -> Dict[str, Any]:
     selected_slots = overlap_slots or sorted(set.union(*all_slots))
     time_label = _format_time_slot_label(selected_slots[0]) if selected_slots else "Flexible"
 
+    # Strict mode: only confirmed-open venues should reach the user, so enrich
+    # every candidate (override the low_cost_mode cap) before the status filter.
+    engine.max_enriched_candidates = None
     try:
         asyncio.run(engine.enrich_all_async(candidates, city_hint="", year_hint=2026, time_slot=time_label, party_size=n))
     except Exception:
         pass
 
-    candidates, open_status_stats = engine.filter_closed_candidates(candidates)
+    candidates, open_status_stats = engine.filter_closed_candidates(candidates, drop_uncertain=True)
     if not candidates:
         return {
             "status": "no_open_candidates",
@@ -1744,10 +1821,11 @@ def _compute_direct_recommendations() -> Dict[str, Any]:
     # the isochrones don't overlap or ORS is unavailable.
     mode_a = normalize_transport_mode(prefs_a.get("travel_mode"))
     mode_b = normalize_transport_mode(prefs_b.get("travel_mode"))
-    minutes_a = max(5, int(round(_distance_miles_to_minutes(prefs_a.get("distance_miles", 15), prefs_a.get("travel_mode")))))
-    minutes_b = max(5, int(round(_distance_miles_to_minutes(prefs_b.get("distance_miles", 15), prefs_b.get("travel_mode")))))
+    # Map geometry tracks the UI's mile slider exactly via ORS range_type=distance.
+    miles_a = min(75.0, max(0.5, float(prefs_a.get("distance_miles", 15) or 15)))
+    miles_b = min(75.0, max(0.5, float(prefs_b.get("distance_miles", 15) or 15)))
     iso_area = engine.get_isochrone_search_area(
-        loc_a, loc_b, minutes_a=minutes_a, minutes_b=minutes_b, transport_a=mode_a, transport_b=mode_b,
+        loc_a, loc_b, miles_a=miles_a, miles_b=miles_b, transport_a=mode_a, transport_b=mode_b,
     )
     iso_a_poly = iso_b_poly = None
     if iso_area.get("overlap_exists") and iso_area.get("geometry") is not None:
@@ -1831,23 +1909,15 @@ def _compute_direct_recommendations() -> Dict[str, Any]:
     time_conflict = not bool(overlap_slots)
     selected_slots = overlap_slots or _build_negotiation_time_slots(slots_a, slots_b)
     time_label = _format_time_slot_label(selected_slots[0]) if overlap_slots else "Flexible"
-    recommendation_meta = _build_recommendation_meta(
-        area_mode,
-        overlap_slots,
-        prefs_a,
-        prefs_b,
-        open_status_stats,
-        radius_negotiation=radius_negotiation,
-        time_negotiation=time_negotiation,
-        meeting_time_alignment=meeting_time_alignment,
-    )
 
+    # Strict mode: only confirmed-open venues reach the user — enrich everyone.
+    engine.max_enriched_candidates = None
     try:
         asyncio.run(engine.enrich_all_async(candidates, city_hint="", year_hint=2026, time_slot=time_label, party_size=2))
     except Exception:
         pass
 
-    candidates, open_status_stats = engine.filter_closed_candidates(candidates)
+    candidates, open_status_stats = engine.filter_closed_candidates(candidates, drop_uncertain=True)
     recommendation_meta = _build_recommendation_meta(
         area_mode,
         overlap_slots,
@@ -2058,7 +2128,7 @@ def _render_result_map(geometry: Optional[Dict[str, Any]], candidates: list[Dict
         icon=folium.Icon(color="purple", icon="star", prefix="fa"),
     ).add_to(fmap)
 
-    # 5) ranked candidate venues
+    # 5) ranked candidate venues — click opens a popup with the LLM/heuristic reasoning
     for idx, c in enumerate(candidates or []):
         lat, lon = c.get("lat"), c.get("lon")
         if lat is None or lon is None:
@@ -2068,16 +2138,34 @@ def _render_result_map(geometry: Optional[Dict[str, Any]], candidates: list[Dict
         badge = "✓ inside shared area" if inside else "△ edge of area"
         status = str(c.get("venue_status", "") or "")
         sample_note = "<br><b>⚠ offline sample</b>" if c.get("is_sample") else ""
+        reason_raw = str(c.get("recommendation_reason", "") or "").strip()
+        # split on "; " (the joiner used in _build_recommendation_reason) for a readable bullet list
+        reason_bits = [html.escape(p.strip()) for p in reason_raw.split(";") if p.strip()]
+        reason_block = (
+            "<div style='margin-top:6px;border-top:1px solid #e5e7eb;padding-top:6px;'>"
+            "<b>Why this place?</b>"
+            "<ul style='margin:4px 0 0 16px;padding:0;'>"
+            + "".join(f"<li>{b}</li>" for b in reason_bits)
+            + "</ul></div>"
+        ) if reason_bits else ""
+        web_title = str(c.get("web_title", "") or "").strip()
+        web_block = (
+            f"<div style='margin-top:4px;color:#475569;font-size:11px;'>web cue: "
+            f"{html.escape(web_title)[:90]}</div>"
+        ) if web_title else ""
         popup_html = (
+            f"<div style='min-width:240px;max-width:300px;font-size:12px;line-height:1.35;'>"
             f"<b>#{idx + 1} {html.escape(str(c.get('name', '')))}</b><br>"
             f"score {float(c.get('final_score', 0)):.2f} · "
             f"Δ{float(c.get('fairness_delta_minutes', 0)):.0f} min<br>"
             f"{badge} · status: {status}{sample_note}"
+            f"{reason_block}{web_block}"
+            f"</div>"
         )
         folium.Marker(
             [lat, lon],
-            popup=folium.Popup(popup_html, max_width=240),
-            tooltip=f"#{idx + 1} {c.get('name', '')}",
+            popup=folium.Popup(popup_html, max_width=320),
+            tooltip=f"#{idx + 1} {c.get('name', '')} — click for reason",
             icon=folium.Icon(color=rank_color, icon="cutlery", prefix="fa"),
         ).add_to(fmap)
 
@@ -2949,13 +3037,11 @@ def _render_result_ready_notifier(
     recommendation = _load_room_recommendation(room_key) or {}
     is_ready = recommendation.get("status") == "ready"
     generated_at = str(recommendation.get("generated_at", "") or recommendation.get("updated_at", "") or "")
-    result_url = _build_room_page_link(room_key, page="check_result")
     payload = {
         "room_id": room_key,
         "current_page": current_page,
         "is_ready": bool(is_ready),
         "generated_at": generated_at,
-        "result_url": result_url,
         "poll_ms": int(max(poll_seconds, 5) * 1000),
     }
     payload_json = json.dumps(payload)
@@ -2964,11 +3050,48 @@ def _render_result_ready_notifier(
         f"""
         <script>
         (function() {{
+            function hideComponentChrome() {{
+                try {{
+                    const frame = window.frameElement;
+                    if (!frame) {{
+                        return;
+                    }}
+                    frame.setAttribute("aria-hidden", "true");
+                    frame.style.width = "0";
+                    frame.style.height = "0";
+                    frame.style.minHeight = "0";
+                    frame.style.border = "0";
+                    frame.style.visibility = "hidden";
+                    frame.style.position = "absolute";
+
+                    const wrapper = frame.parentElement;
+                    if (wrapper) {{
+                        wrapper.style.height = "0";
+                        wrapper.style.minHeight = "0";
+                        wrapper.style.margin = "0";
+                        wrapper.style.padding = "0";
+                        wrapper.style.overflow = "hidden";
+                    }}
+                }} catch (e) {{}}
+            }}
+            hideComponentChrome();
+
             const cfg = {payload_json};
             const roomKey = `mhai-result-notified:${{cfg.room_id}}:${{cfg.generated_at || 'pending'}}`;
             const fallbackKey = `mhai-result-fallback:${{cfg.room_id}}:${{cfg.generated_at || 'pending'}}`;
             const messageTitle = "MeetHalfway AI";
             const messageBody = "Your shared recommendations are ready. Open the result page to review them.";
+
+            function resultUrl() {{
+                try {{
+                    const parentLocation = window.parent && window.parent.location;
+                    const origin = parentLocation && parentLocation.origin ? parentLocation.origin : window.location.origin;
+                    const path = parentLocation && parentLocation.pathname ? parentLocation.pathname : "/";
+                    return `${{origin}}${{path}}?room=${{encodeURIComponent(cfg.room_id)}}&page=check_result`;
+                }} catch (e) {{
+                    return `/?room=${{encodeURIComponent(cfg.room_id)}}&page=check_result`;
+                }}
+            }}
 
             function markSeen() {{
                 try {{
@@ -2979,9 +3102,9 @@ def _render_result_ready_notifier(
 
             function openResults() {{
                 try {{
-                    window.parent.location.href = cfg.result_url;
+                    window.parent.location.href = resultUrl();
                 }} catch (e) {{
-                    window.location.href = cfg.result_url;
+                    window.location.href = resultUrl();
                 }}
             }}
 
@@ -3078,9 +3201,9 @@ def _render_result_ready_notifier(
                 if (cfg.current_page === "check_result") {{
                     window.setTimeout(() => {{
                         try {{
-                            window.parent.location.href = cfg.result_url;
+                            window.parent.location.href = resultUrl();
                         }} catch (e) {{
-                            window.location.href = cfg.result_url;
+                            window.location.href = resultUrl();
                         }}
                     }}, cfg.poll_ms);
                 }}
@@ -3347,16 +3470,16 @@ def render_home_page():
         <div class="poster-hero">
             <div class="hero-grid">
                 <div>
-                    <div class="hero-kicker">Privacy-first dating and dining planner</div>
+                    <div class="hero-kicker">Fairness-first meetup planner</div>
                     <div class="hero-title">MeetHalfway AI</div>
                     <div class="hero-subtitle">
                         No more recommendations centered around just one person. We combine commute fairness,
-                        mutual preferences, shared availability, venue popularity, and privacy safeguards
-                        to find truly balanced places for both people to meet.
+                        mutual preferences, shared availability, and venue popularity to find truly balanced
+                        places for everyone to meet.
                     </div>
                     <div class="hero-pill-row">
                         <div class="hero-pill">Midpoint + overlap-based recommendations</div>
-                        <div class="hero-pill">Private location handling in session memory</div>
+                        <div class="hero-pill">Live map of everyone's reachable area</div>
                         <div class="hero-pill">Place voting + time negotiation</div>
                     </div>
                 </div>
@@ -3367,8 +3490,8 @@ def render_home_page():
                             <div class="metric-value">Fairness</div>
                         </div>
                         <div class="metric-card">
-                            <div class="metric-label">Privacy Policy</div>
-                            <div class="metric-value">No location sharing between users</div>
+                            <div class="metric-label">Map View</div>
+                            <div class="metric-value">Everyone's location + reachable area</div>
                         </div>
                         <div class="metric-card">
                             <div class="metric-label">Recommendation Target</div>
@@ -3389,12 +3512,12 @@ def render_home_page():
     # Workflow steps
     colors = ["#3578ff", "#28b36e", "#ff9d2f", "#8c63ff", "#ff5d8f", "#20a3a8"]
     steps = [
-        ("Private location check-in", "Each user shares location with the system only, not with each other."),
-        ("Set commute radius", "Choose acceptable travel radius for both sides to define a safe overlap area."),
+        ("Mark your starting point", "Each person drops a pin on the shared map so everyone can see where they're coming from."),
+        ("Set commute radius", "Choose acceptable travel radius for each side to define a reachable overlap area."),
         ("Search overlap area", "Find public places only inside the mutually acceptable overlap zone."),
-        ("Vote on places", "Both users vote independently on the same candidates, with mutual preference prioritized."),
+        ("Vote on places", "Everyone votes independently on the same candidates, with mutual preference prioritized."),
         ("Align available time", "Combine shared availability with time-slot preferences."),
-        ("Generate final suggestion", "Balance fairness, preference alignment, and privacy in the final output."),
+        ("Generate final suggestion", "Balance fairness and preference alignment to pick the best venue."),
     ]
 
     cards = []
@@ -3411,27 +3534,6 @@ def render_home_page():
             )
         )
     st.markdown(f'<div class="workflow-grid">{"".join(cards)}</div>', unsafe_allow_html=True)
-
-    # Privacy cards
-    st.markdown(
-        """
-        <div class="privacy-board">
-            <div class="privacy-card">
-                <strong>No direct location exchange</strong>
-                <span>Users never share coordinates or addresses directly with each other.</span>
-            </div>
-            <div class="privacy-card">
-                <strong>Radius and outcome first</strong>
-                <span>The UI emphasizes travel radius, overlap area, and recommendations instead of raw locations.</span>
-            </div>
-            <div class="privacy-card">
-                <strong>Vote-based coordination</strong>
-                <span>Both users evaluate the same candidate list and converge via preference voting.</span>
-            </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
 
 
 # ============================================================================
@@ -3574,6 +3676,56 @@ def render_action_select_page():
         st.session_state.current_page = "know_position"
         st.rerun()
 
+def _inject_number_input_validation_messages() -> None:
+    """Force browser-native number input validation popups to render in English.
+
+    Streamlit's number_input falls back to the browser's locale (e.g., Chinese
+    on a zh-CN browser). We bind oninvalid on each number input in the parent
+    document and call setCustomValidity with an English message.
+    """
+    components.html(
+        """
+        <script>
+        (function() {
+            const doc = window.parent && window.parent.document;
+            if (!doc || !doc.body) { return; }
+            function describe(input) {
+                const max = input.getAttribute('max');
+                const min = input.getAttribute('min');
+                const val = parseFloat(input.value);
+                if (max !== null && !isNaN(val) && val > parseFloat(max)) {
+                    return 'Please enter a value less than or equal to ' + max + '.';
+                }
+                if (min !== null && !isNaN(val) && val < parseFloat(min)) {
+                    return 'Please enter a value greater than or equal to ' + min + '.';
+                }
+                return 'Please enter a valid number.';
+            }
+            function bind(input) {
+                if (input.dataset.mhaiValidityBound === '1') { return; }
+                input.dataset.mhaiValidityBound = '1';
+                input.addEventListener('invalid', function() {
+                    input.setCustomValidity(describe(input));
+                });
+                input.addEventListener('input', function() {
+                    input.setCustomValidity('');
+                });
+            }
+            function scan() {
+                doc.querySelectorAll('input[type="number"]').forEach(bind);
+            }
+            scan();
+            try {
+                const observer = new MutationObserver(scan);
+                observer.observe(doc.body, { childList: true, subtree: true });
+            } catch (e) {}
+        })();
+        </script>
+        """,
+        height=0,
+    )
+
+
 def render_generate_link_page():
     """Render the Generate Link page."""
     st.header("🔗 Generate Link")
@@ -3591,8 +3743,11 @@ def render_generate_link_page():
             max_value=MAX_PARTICIPANTS,
             value=int(st.session_state.get("participant_count", 2) or 2),
             step=1,
+            help=f"Up to {MAX_PARTICIPANTS} people are supported.",
         )
+        st.caption(f"Note: maximum {MAX_PARTICIPANTS} people per room.")
         st.session_state.participant_count = int(participant_count)
+        _inject_number_input_validation_messages()
         your_name = st.text_input("Your Name")
 
         st.markdown('<label>Your Email <span style="color: #999; font-size: 0.85em;">(optional)</span></label>', unsafe_allow_html=True)
@@ -3621,6 +3776,22 @@ def render_generate_link_page():
 
         if st.session_state.link_generated:
             st.success("✅ Link Generated!")
+            creator_role_key = _normalize_user_role(st.session_state.get("user_role", "Person 1")) or "P1"
+            creator_role_label = _role_label(creator_role_key)
+            total_participants = int(st.session_state.get("participant_count", 2) or 2)
+            other_role_labels = [
+                _role_label(f"P{i}") for i in range(1, total_participants + 1)
+                if f"P{i}" != creator_role_key
+            ]
+            others_text = ", ".join(other_role_labels) if other_role_labels else "the other participants"
+
+            with st.container(border=True):
+                st.markdown(f"#### 👤 Your Role: **{creator_role_label}**  _(the meeting creator)_")
+                st.caption(
+                    f"Anyone who opens your invite link will pick from **{others_text}**. "
+                    f"Remember this so you choose the right role when you continue on the next page."
+                )
+
             st.markdown("**Your Invitation Link:**")
             st.code(st.session_state.generated_link, language="text")
             st.markdown("**Room ID:**")
@@ -3874,7 +4045,6 @@ def render_check_result_page():
 
     if room_id:
         summary = _preference_summary(room_id)
-        st.caption("Privacy mode: personal details are hidden on this page. Only room-level readiness is shown.")
 
         if summary["weighted_center"]:
             st.success("Everyone is ready. The shared center has been computed and recommendation generation can proceed.")
@@ -4397,9 +4567,10 @@ def render_final_result_page():
 def render_user_info_step1_page():
     """Render the user information step 1 - Private location input."""
     st.header("Your Location")
-    st.write(f"Person {st.session_state.user_role} - Please share your location")
+    role_key = _normalize_user_role(st.session_state.user_role)
+    st.write(f"{_role_label(role_key)} - Please share your location")
 
-    user_role = st.session_state.user_role.replace("Person ", "").upper()
+    user_role = role_key
     room_id = st.session_state.room_id
     if room_id:
         _render_result_ready_notifier(room_id, current_page="user_info_step1")
@@ -4559,10 +4730,16 @@ def render_user_info_step1_page():
                 if approx_address:
                     st.caption(f"Approximate area: {approx_address}")
                 st.caption(f"Approximate coordinates: {ip_candidate['lat']:.5f}, {ip_candidate['lon']:.5f}")
+                _render_detected_location_preview_map(
+                    ip_candidate["lat"],
+                    ip_candidate["lon"],
+                    address=approx_address or "",
+                    map_key=f"ip_location_preview_{user_role}",
+                    title="Approximate network location",
+                )
                 if st.button("Use Approximate Network Location", use_container_width=True, key=f"use_ip_location_{user_role}"):
                     st.session_state[f"location_{user_role}"] = Location(ip_candidate["lat"], ip_candidate["lon"])
                     _persist_user_location(room_id, user_role, st.session_state[f"location_{user_role}"], "ip-approx")
-                    st.success("Approximate location confirmed!")
         else:
             accuracy = float(candidate.get("accuracy", 0) or 0)
             accuracy_note = f" (accuracy about {accuracy:.0f} m)" if accuracy > 0 else ""
@@ -4570,10 +4747,16 @@ def render_user_info_step1_page():
             resolved_address = _reverse_geocode(candidate["lat"], candidate["lon"])
             if resolved_address:
                 st.caption(f"Detected area: {resolved_address}")
+            _render_detected_location_preview_map(
+                candidate["lat"],
+                candidate["lon"],
+                accuracy_meters=accuracy,
+                address=resolved_address or "",
+                map_key=f"gps_location_preview_{user_role}_{st.session_state.get(f'gps_result_nonce_{user_role}', 0)}",
+            )
             if st.button("Confirm This Location", type="primary", use_container_width=True, key=f"confirm_gps_{user_role}"):
                 st.session_state[f"location_{user_role}"] = Location(candidate["lat"], candidate["lon"])
                 _persist_user_location(room_id, user_role, st.session_state[f"location_{user_role}"], "gps")
-                st.success("Location confirmed!")
 
     elif mode.startswith("2)"):
         st.subheader("Option 2: Map picker")
@@ -4637,7 +4820,6 @@ def render_user_info_step1_page():
         ):
             st.session_state[f"location_{user_role}"] = Location(latest["lat"], latest["lon"])
             _persist_user_location(room_id, user_role, st.session_state[f"location_{user_role}"], "map-picker")
-            st.success("Location confirmed from map picker!")
 
     else:
         st.subheader("Option 3: Enter address")
@@ -4657,6 +4839,13 @@ def render_user_info_step1_page():
             st.caption("No instant matches yet. Keep typing with spaces (example: 5310 Rockhill).")
         elif selected_item:
             st.caption(f"Matched coordinates: {selected_item['lat']:.6f}, {selected_item['lon']:.6f}")
+            _render_detected_location_preview_map(
+                selected_item["lat"],
+                selected_item["lon"],
+                address=selected_item["label"],
+                map_key=f"address_location_preview_{user_role}_{selected_item['lat']}_{selected_item['lon']}",
+                title="Selected address location",
+            )
         final_address = selected or query
 
         if st.button("Confirm Address", type="primary", use_container_width=True, key=f"confirm_address_{user_role}"):
@@ -4668,7 +4857,6 @@ def render_user_info_step1_page():
             if location is not None:
                 st.session_state[f"location_{user_role}"] = location
                 _persist_user_location(room_id, user_role, location, "address")
-                st.success("Location confirmed from address!")
             else:
                 st.error("Could not locate this address. Please refine your input.")
 
@@ -4686,10 +4874,10 @@ def render_user_info_step1_page():
 def render_user_info_step2_page():
     """Render the user information step 2 - Preferences & search strategy."""
     st.header("✍️ Your Preferences")
-    st.write(f"Person {st.session_state.user_role} - a few quick choices so we can narrow things down.")
     room_id = st.session_state.room_id
     role_label = st.session_state.user_role
     role_key = _normalize_user_role(role_label)
+    st.write(f"{_role_label(role_key)} - a few quick choices so we can narrow things down.")
     if room_id:
         _render_result_ready_notifier(room_id, current_page="user_info_step2")
         st.caption("You can leave this tab open. We will keep checking the room and notify you when the shared recommendations are ready.")
@@ -4943,6 +5131,136 @@ def render_user_info_step2_page():
 # ============================================================================
 # Page: Already Know Others Position
 # ============================================================================
+# Real Riverside, CA places shared by all demo seeds (matches _test_multi_user.py).
+# Order matters: presets riverside_n{k} take the first k entries.
+_RIVERSIDE_PARTICIPANTS: list[Dict[str, Any]] = [
+    {"name": "Alex (Downtown)",    "lat": 33.9806, "lon": -117.3838},
+    {"name": "Bo (Canyon Crest)",  "lat": 33.9696, "lon": -117.3267},
+    {"name": "Cam (La Sierra)",    "lat": 33.9006, "lon": -117.4910},
+    {"name": "Dani (Magnolia)",    "lat": 33.9305, "lon": -117.4255},
+    {"name": "Erin (Hunter Park)", "lat": 33.9961, "lon": -117.3645},
+]
+
+# Default per-participant preferences for demo seeds. Picks five 30-min
+# evening slots (6:00-8:00 PM dinner window) so the overlap is non-empty
+# but not overwhelming.
+_DEFAULT_DEMO_SLOTS = ["18:00", "18:30", "19:00", "19:30", "20:00"]
+_DEFAULT_DEMO_PREFS: Dict[str, Any] = {
+    "meeting_type": "casual",
+    "cuisine": "",
+    "budget": 50,
+    "distance_miles": 15,
+    "venue_type": ["Restaurant"],
+    "surprise": False,
+    "travel_mode": "drive",
+    "availability_slots": list(_DEFAULT_DEMO_SLOTS),
+    "ambiance_preference": "balanced",
+}
+
+
+_DEMO_SEED_PRESETS: Dict[str, Dict[str, Any]] = {
+    # Direct flow (2 people, Person A / Person B). Lands on dual_preferences.
+    "riverside": {
+        "flow": "direct",
+        "a": _RIVERSIDE_PARTICIPANTS[0],
+        "b": _RIVERSIDE_PARTICIPANTS[1],
+        "label": "Riverside, CA (downtown ↔ Canyon Crest)",
+    },
+}
+# Room-flow N-person presets (N = 3, 4, 5). Each lands on check_result with
+# the recommendation engine ready to fire immediately.
+for _n in (3, 4, 5):
+    _DEMO_SEED_PRESETS[f"riverside_n{_n}"] = {
+        "flow": "room",
+        "participants": _RIVERSIDE_PARTICIPANTS[:_n],
+        "label": f"Riverside, CA — {_n}-person group",
+    }
+
+
+def _seed_direct_flow(preset: Dict[str, Any]) -> None:
+    """Seed Person A + Person B for the direct two-person flow."""
+    st.session_state["location_A"] = Location(preset["a"]["lat"], preset["a"]["lon"])
+    st.session_state["location_B"] = Location(preset["b"]["lat"], preset["b"]["lon"])
+    st.session_state.direct_flow_active = True
+    st.session_state.room_id = ""
+    st.session_state.user_role = ""
+    st.session_state.selected_action = "know_position"
+    _reset_direct_flow_results()
+    st.session_state.current_page = "dual_preferences"
+
+
+def _seed_room_flow(seed_key: str, preset: Dict[str, Any]) -> None:
+    """Seed an N-participant room (N = 3..5) and route to check_result.
+
+    Uses a deterministic room_id of the form ``demo-<seed_key>`` so re-seeding
+    the same scenario reuses (and overwrites) the same room, keeping the
+    room-state file small.
+    """
+    participants = preset["participants"]
+    room_id = f"demo-{seed_key}"
+    n = len(participants)
+
+    # Lock the participant count up front so anyone who joins this room mid-demo
+    # sees the right Person 1..N slots.
+    _set_room_participant_count(room_id, n)
+    for idx, p in enumerate(participants, start=1):
+        role_key = f"P{idx}"
+        _persist_user_profile(room_id, role_key, p["name"])
+        _persist_user_location(
+            room_id, role_key, Location(float(p["lat"]), float(p["lon"])), "demo-seed"
+        )
+        _persist_user_preferences(room_id, role_key, dict(_DEFAULT_DEMO_PREFS))
+
+    st.session_state.room_id = room_id
+    st.session_state.user_role = "P1"
+    st.session_state.selected_action = "join_link"
+    st.session_state.direct_flow_active = False
+    st.session_state.link_generated = True
+    st.session_state.current_page = "check_result"
+
+
+def _maybe_apply_demo_seed() -> None:
+    """If ?demo_seed=<key> is present, pre-populate state and route to a
+    result-ready page. Idempotent within a session via __demo_seeded guard.
+
+    Two flow variants:
+      - flow="direct": seeds the 2-person direct flow (Person A / Person B).
+        Lands on dual_preferences with both locations set.
+      - flow="room":   seeds an N-person room (N = 3..5) with full preferences,
+        creates a deterministic room_id, and lands on check_result so the
+        recommendation engine fires immediately.
+
+    Both variants are designed for the live conference demo (instant reset to
+    a clean scenario) and for headless e2e capture of the recommendation
+    pipeline output.
+    """
+    seed_key = st.query_params.get("demo_seed", "")
+    if isinstance(seed_key, list):
+        seed_key = seed_key[0] if seed_key else ""
+    seed_key = (seed_key or "").strip().lower()
+    if not seed_key or seed_key not in _DEMO_SEED_PRESETS:
+        return
+    if st.session_state.get("__demo_seeded") == seed_key:
+        return
+
+    preset = _DEMO_SEED_PRESETS[seed_key]
+    flow = preset.get("flow", "direct")
+    if flow == "room":
+        _seed_room_flow(seed_key, preset)
+    else:
+        _seed_direct_flow(preset)
+    st.session_state["__demo_seeded"] = seed_key
+
+    # Strip routing query params so the next rerun doesn't override the page.
+    for k in ("demo_seed", "page", "room"):
+        try:
+            if k in st.query_params:
+                del st.query_params[k]
+        except Exception:
+            pass
+    st.rerun()
+
+
 def render_know_position_page():
     """Render the Already Know Others Position page."""
     st.header("👥 Already Know Others Position")
@@ -5217,11 +5535,15 @@ def render_navigation():
 # ============================================================================
 def main():
     inject_page_styles()
-    
+
+    # Demo-seed preloader fires before any URL-routing so seeded sessions
+    # land on the right page on first render.
+    _maybe_apply_demo_seed()
+
     # Get page from URL or session state
     from urllib.parse import urlparse, parse_qs
     query_params = st.query_params
-    
+
     # Check if user is joining via invitation link
     if "room" in query_params and query_params["room"]:
         # Only auto-route on entry pages. Otherwise it would override in-flow navigation.

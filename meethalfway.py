@@ -58,6 +58,9 @@ MAPBOX_ISOCHRONE_BASE = "https://api.mapbox.com/isochrone/v1/mapbox"
 ORS_ISOCHRONE_BASE = "https://api.openrouteservice.org/v2/isochrones"
 TAVILY_SEARCH_URL = "https://api.tavily.com/search"
 YELP_SEARCH_URL = "https://api.yelp.com/v3/businesses/search"
+# Foursquare Places API (2024 rebrand). Requires Bearer auth + X-Places-Api-Version.
+FOURSQUARE_SEARCH_URL = "https://places-api.foursquare.com/places/search"
+FOURSQUARE_API_VERSION = "2025-06-17"
 
 # A descriptive User-Agent is REQUIRED by Nominatim's usage policy and helps
 # avoid WAF blocks (HTTP 406/403) on the public Overpass instances.
@@ -297,10 +300,12 @@ class MeetHalfwayRecommender:
         openai_key: Optional[str],
         openai_model: str,
         openai_base: Optional[str] = None,
+        foursquare_api_key: Optional[str] = None,
         transport: str = "transit",
         isochrone_minutes: int = 20,
         low_cost_mode: bool = False,
         use_yelp: bool = True,
+        use_foursquare: bool = True,
         use_llm_extraction: bool = True,
         use_llm_summary: bool = True,
         max_enriched_candidates: Optional[int] = None,
@@ -312,10 +317,12 @@ class MeetHalfwayRecommender:
         self.openai_key = openai_key
         self.openai_model = openai_model
         self.openai_base = openai_base
+        self.foursquare_api_key = (foursquare_api_key or "").strip() or None
         self.transport = transport
         self.isochrone_minutes = isochrone_minutes
         self.low_cost_mode = low_cost_mode
         self.use_yelp = use_yelp and bool(yelp_api_key)
+        self.use_foursquare = use_foursquare and bool(self.foursquare_api_key)
         self.use_llm_extraction = use_llm_extraction
         self.use_llm_summary = use_llm_summary
         # Degradation flags: switch to fallbacks after the first failure
@@ -606,6 +613,8 @@ class MeetHalfwayRecommender:
         if not HAS_SHAPELY:
             logger.warning("shapely not installed - isochrones degraded to radius approximation circles.")
             return None
+        # Mapbox's per-profile cap is 60 minutes; >60 returns 422.
+        minutes = min(60, max(1, int(minutes)))
         url = f"{MAPBOX_ISOCHRONE_BASE}/{profile}/{loc.lon},{loc.lat}"
         params = {
             "contours_minutes": str(minutes),
@@ -630,8 +639,21 @@ class MeetHalfwayRecommender:
             self._mapbox_ok = False
             return None
 
-    def _fetch_isochrone_ors(self, loc: Location, minutes: int, transport: str) -> Optional[Any]:
-        """Call the OpenRouteService Isochrone API and return a shapely Polygon."""
+    def _fetch_isochrone_ors(
+        self,
+        loc: Location,
+        range_value: float,
+        transport: str,
+        range_type: str = "time",
+    ) -> Optional[Any]:
+        """Call the OpenRouteService Isochrone API and return a shapely Polygon.
+
+        ``range_type="time"`` -> ``range_value`` is **minutes** (legacy path).
+        ``range_type="distance"`` -> ``range_value`` is **miles**; reachable
+        polygon follows the road network out to that many road-miles.  This is
+        the path that matches the "Max commute distance: N mi" slider in the UI
+        (UI promise == map geometry).
+        """
         if not self.ors_api_key or not HAS_SHAPELY:
             return None
 
@@ -642,11 +664,27 @@ class MeetHalfwayRecommender:
         }
         profile = profile_map.get(transport, "driving-car")
         url = f"{ORS_ISOCHRONE_BASE}/{profile}"
-        payload = {
-            "locations": [[loc.lon, loc.lat]],
-            "range": [int(minutes) * 60],
-            "range_type": "time",
-        }
+
+        if range_type == "distance":
+            # ORS free tier rejects driving distance ranges >120 km (~75 mi).
+            miles = min(75.0, max(0.25, float(range_value)))
+            range_meters = int(round(miles * 1609.34))
+            payload = {
+                "locations": [[loc.lon, loc.lat]],
+                "range": [range_meters],
+                "range_type": "distance",
+            }
+            log_unit = f"{miles:.1f} mi"
+        else:
+            # ORS free tier rejects ranges >3600 s (60 min) with HTTP 400.
+            minutes = min(60, max(1, int(range_value)))
+            payload = {
+                "locations": [[loc.lon, loc.lat]],
+                "range": [minutes * 60],
+                "range_type": "time",
+            }
+            log_unit = f"{minutes} min"
+
         headers = {
             "Authorization": self.ors_api_key,
             "Content-Type": "application/json",
@@ -660,10 +698,10 @@ class MeetHalfwayRecommender:
                 return None
             poly = shape(features[0]["geometry"])
             logger.info(
-                "ORS isochrone fetched (%.4f, %.4f) | %d min | profile=%s",
+                "ORS isochrone fetched (%.4f, %.4f) | %s | profile=%s",
                 loc.lat,
                 loc.lon,
-                minutes,
+                log_unit,
                 profile,
             )
             return poly
@@ -671,15 +709,30 @@ class MeetHalfwayRecommender:
             logger.warning("ORS Isochrone request failed: %s", exc)
             return None
 
-    def _circle_fallback(self, loc: Location, minutes: int) -> Optional[Any]:
-        """Approximate an isochrone with a circular buffer when Mapbox is unavailable."""
+    def _circle_fallback(
+        self,
+        loc: Location,
+        range_value: float,
+        range_type: str = "time",
+    ) -> Optional[Any]:
+        """Approximate an isochrone with a circular buffer when ORS/Mapbox are unavailable.
+
+        In ``distance`` mode the radius is taken literally from miles; in
+        ``time`` mode it's the legacy speed*minutes estimate.
+        """
         if not HAS_SHAPELY:
             return None
-        speed = _SPEED_KM_MIN.get(self.transport, _SPEED_KM_MIN["transit"])
-        radius_km = speed * minutes
+        if range_type == "distance":
+            radius_km = float(range_value) * 1.60934
+        else:
+            speed = _SPEED_KM_MIN.get(self.transport, _SPEED_KM_MIN["transit"])
+            radius_km = speed * float(range_value)
         radius_deg = radius_km / 111.0  # 1° ≈ 111 km
         pt = Point(loc.lon, loc.lat)
-        logger.info("Circle-fallback isochrone (%.4f, %.4f) | radius %.2f km", loc.lat, loc.lon, radius_km)
+        logger.info(
+            "Circle-fallback isochrone (%.4f, %.4f) | radius %.2f km (%s)",
+            loc.lat, loc.lon, radius_km, range_type,
+        )
         return pt.buffer(radius_deg)
 
     def get_distance_circle(self, loc: Location, radius_km: float) -> Optional[Any]:
@@ -766,19 +819,31 @@ class MeetHalfwayRecommender:
             logger.error("Radius intersection computation failed: %s", exc)
             return {"geometry": None, "overlap_exists": False, "mode": "unknown"}
 
-    def _isochrone(self, loc: Location, minutes: int, transport: str) -> Optional[Any]:
-        """Fetch one travel-time isochrone polygon (ORS first, then Mapbox, then circle)."""
-        poly = self._fetch_isochrone_ors(loc, minutes, transport)
-        if poly is None:
+    def _isochrone(
+        self,
+        loc: Location,
+        range_value: float,
+        transport: str,
+        range_type: str = "time",
+    ) -> Optional[Any]:
+        """Fetch one isochrone polygon (ORS first, then Mapbox if applicable, then circle fallback).
+
+        ``range_type="distance"`` -> ``range_value`` is miles. Mapbox is skipped
+        in distance mode because the Mapbox Isochrone API only supports time
+        contours; we go straight to the distance-based circle fallback if ORS
+        fails. ``range_type="time"`` keeps the legacy minutes-based path.
+        """
+        poly = self._fetch_isochrone_ors(loc, range_value, transport, range_type=range_type)
+        if poly is None and range_type == "time":
             profile = _PROFILE_MAP.get(transport, "driving")
-            poly = self._fetch_isochrone(loc, minutes, profile)
+            poly = self._fetch_isochrone(loc, int(range_value), profile)
         if poly is None:
-            poly = self._circle_fallback(loc, minutes)
+            poly = self._circle_fallback(loc, range_value, range_type=range_type)
         return poly
 
     def get_isochrone(self, loc: Location) -> Optional[Any]:
         """Travel-time isochrone polygon (ORS first, Mapbox, then circle fallback)."""
-        return self._isochrone(loc, self.isochrone_minutes, self.transport)
+        return self._isochrone(loc, self.isochrone_minutes, self.transport, range_type="time")
 
     def get_isochrone_search_area(
         self,
@@ -788,20 +853,34 @@ class MeetHalfwayRecommender:
         minutes_b: Optional[int] = None,
         transport_a: Optional[str] = None,
         transport_b: Optional[str] = None,
+        miles_a: Optional[float] = None,
+        miles_b: Optional[float] = None,
     ) -> Dict[str, Any]:
-        """Shared feasible region from per-user travel-time isochrones.
+        """Shared feasible region from per-user reachable isochrones.
+
+        If ``miles_a``/``miles_b`` are given, each region is the road-network
+        polygon reachable within that many miles (ORS ``range_type=distance``);
+        this matches the "Max commute distance" mile slider in the UI exactly.
+        Otherwise falls back to time-budget isochrones from ``minutes_a/b``
+        (legacy path).
 
         Returns ``{geometry, overlap_exists, mode, iso_a, iso_b}``. ``mode`` is
         ``isochrone_intersection`` when both reachable regions overlap, otherwise
         ``isochrone_union_fallback`` (relaxed) or ``unknown``. ``iso_a``/``iso_b``
         are the individual reachable polygons, used for map visualization.
         """
-        ma = int(minutes_a) if minutes_a else self.isochrone_minutes
-        mb = int(minutes_b) if minutes_b else self.isochrone_minutes
         ta = transport_a or self.transport
         tb = transport_b or self.transport
-        iso_a = self._isochrone(a, ma, ta)
-        iso_b = self._isochrone(b, mb, tb)
+        if miles_a is not None or miles_b is not None:
+            ra = float(miles_a) if miles_a is not None else 15.0
+            rb = float(miles_b) if miles_b is not None else 15.0
+            iso_a = self._isochrone(a, ra, ta, range_type="distance")
+            iso_b = self._isochrone(b, rb, tb, range_type="distance")
+        else:
+            ma = int(minutes_a) if minutes_a else self.isochrone_minutes
+            mb = int(minutes_b) if minutes_b else self.isochrone_minutes
+            iso_a = self._isochrone(a, ma, ta, range_type="time")
+            iso_b = self._isochrone(b, mb, tb, range_type="time")
         if iso_a is None or iso_b is None:
             return {"geometry": None, "overlap_exists": False, "mode": "unknown", "iso_a": iso_a, "iso_b": iso_b}
         try:
@@ -821,17 +900,39 @@ class MeetHalfwayRecommender:
         locations: List[Location],
         minutes_list: Optional[List[int]] = None,
         transport: Optional[str] = None,
+        miles_list: Optional[List[float]] = None,
+        transport_list: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
-        """N-participant shared feasible region from travel-time isochrones.
+        """N-participant shared feasible region from per-user reachable isochrones.
+
+        If ``miles_list`` is given, each region is the road-network polygon
+        reachable within that many miles (matches the "Max distance" slider).
+        Otherwise falls back to time-budget isochrones from ``minutes_list``
+        (legacy path).
+
+        ``transport_list`` (optional, aligned with ``locations``) lets each
+        participant use a distinct transport mode (e.g. ``["drive","walk","transit"]``).
+        If omitted, the single ``transport`` argument (or ``self.transport``)
+        is applied uniformly. Backward-compatible.
 
         Returns ``{geometry, overlap_exists, mode, regions}`` where ``regions`` is
         the per-participant reachable polygon list (aligned with ``locations``).
         """
-        t = transport or self.transport
+        t_default = transport or self.transport
         regions: List[Any] = []
+        use_distance = miles_list is not None
+        use_per_user_mode = (
+            transport_list is not None
+            and len(transport_list) == len(locations)
+        )
         for i, loc in enumerate(locations):
-            minutes = (minutes_list[i] if minutes_list and i < len(minutes_list) else None) or self.isochrone_minutes
-            regions.append(self._isochrone(loc, minutes, t))
+            t_i = transport_list[i] if use_per_user_mode else t_default
+            if use_distance:
+                miles = (miles_list[i] if i < len(miles_list) else None) or 15.0
+                regions.append(self._isochrone(loc, float(miles), t_i, range_type="distance"))
+            else:
+                minutes = (minutes_list[i] if minutes_list and i < len(minutes_list) else None) or self.isochrone_minutes
+                regions.append(self._isochrone(loc, minutes, t_i, range_type="time"))
         valid = [r for r in regions if r is not None and not getattr(r, "is_empty", False)]
         if len(valid) < 2:
             return {"geometry": None, "overlap_exists": False, "mode": "unknown", "regions": regions}
@@ -1056,16 +1157,26 @@ class MeetHalfwayRecommender:
     def filter_closed_candidates(
         self,
         candidates: List[CandidateRestaurant],
+        drop_uncertain: bool = False,
+        min_keep: int = 2,
     ) -> Tuple[List[CandidateRestaurant], Dict[str, int]]:
         """
         Drop candidates known to be closed based on the web-signal status.
 
-        Rules:
+        Default rule (legacy, lenient):
           - status=closed: drop
           - status=open / uncertain: keep
+
+        ``drop_uncertain=True`` (strict): only ``status=="open"`` survives —
+        anything we can't positively confirm as open is dropped. Safety net:
+        if strict filter would leave fewer than ``min_keep`` candidates (e.g.
+        Tavily was rate-limited and almost everything degraded to uncertain),
+        we automatically fall back to the legacy rule so the user never sees
+        an empty results page. The actual rule used is reflected in the log.
         """
         stats = {"open": 0, "closed": 0, "uncertain": 0}
-        filtered: List[CandidateRestaurant] = []
+        open_only: List[CandidateRestaurant] = []
+        keep_loose: List[CandidateRestaurant] = []
         for c in candidates:
             status = str((c.web_signals or {}).get("status", "uncertain")).lower()
             if status not in stats:
@@ -1073,9 +1184,23 @@ class MeetHalfwayRecommender:
             stats[status] += 1
             if status == "closed":
                 continue
-            filtered.append(c)
+            keep_loose.append(c)
+            if status == "open":
+                open_only.append(c)
+
+        if drop_uncertain and len(open_only) >= min_keep:
+            filtered = open_only
+            rule = "strict_open_only"
+        elif drop_uncertain:
+            filtered = keep_loose
+            rule = "strict_degraded_to_legacy"  # not enough confirmed-open venues
+        else:
+            filtered = keep_loose
+            rule = "legacy"
+
         logger.info(
-            "Open-status filter: open=%d uncertain=%d closed=%d -> kept %d/%d",
+            "Open-status filter [%s]: open=%d uncertain=%d closed=%d -> kept %d/%d",
+            rule,
             stats["open"],
             stats["uncertain"],
             stats["closed"],
@@ -1140,6 +1265,15 @@ class MeetHalfwayRecommender:
                     )
             except Exception as exc:
                 logger.warning("Could not extract intersection centroid, using default center: %s", exc)
+
+        # Foursquare Places API is tried first when a key is configured: it returns
+        # rating/hours/price metadata that Mapbox POI lacks, which feeds directly
+        # into the fairness/preference scoring layer downstream.
+        fsq_items = self._search_foursquare(
+            search_center, center, venue_type, q, limit, intersection
+        )
+        if fsq_items:
+            return fsq_items
 
         if not self.mapbox_token:
             logger.info("Mapbox not configured - going straight to the Overpass/OSM/sample fallback chain.")
@@ -1226,6 +1360,168 @@ class MeetHalfwayRecommender:
         return self._offline_sample_venues(
             center, venue_type=venue_type, limit=limit, intersection=intersection
         )
+
+    def _polygon_radius_m(self, intersection: Optional[Any]) -> int:
+        """Derive a Foursquare-friendly search radius (meters) from an intersection polygon.
+
+        Half the bounding-box diagonal + 500m buffer, clipped to [1000, 5000].
+        Falls back to 3000m when no polygon is available.
+        """
+        if intersection is None or not HAS_SHAPELY:
+            return 3000
+        try:
+            if intersection.is_empty:
+                return 3000
+            minx, miny, maxx, maxy = intersection.bounds
+            diag_km = self.haversine_km(Location(miny, minx), Location(maxy, maxx))
+            return int(min(max(diag_km * 1000.0 / 2.0 + 500.0, 1000.0), 5000.0))
+        except Exception:
+            return 3000
+
+    def _search_foursquare(
+        self,
+        search_center: Location,
+        center: Location,
+        venue_type: str,
+        q: str,
+        limit: int,
+        intersection: Optional[Any],
+    ) -> List[CandidateRestaurant]:
+        """Foursquare Places API search (first-class POI source with rating/hours/price).
+
+        Tried before Mapbox when a Foursquare key is configured. Any failure (missing
+        key, HTTP error, empty result after intersection filter) falls through silently
+        so the Mapbox -> Overpass -> Nominatim -> offline_sample chain still runs.
+        """
+        if not (self.foursquare_api_key and self.use_foursquare):
+            return []
+
+        radius_m = self._polygon_radius_m(intersection)
+        # Foursquare basic Service Key is free for the default fields
+        # (name, lat/lon, categories, location, distance). Premium fields
+        # like rating/price/hours are paywalled and return 429 + Remaining=0
+        # for free keys, so we request only the basic set; rating/open-now
+        # signals come from Tavily web enrichment downstream.
+        params = {
+            "ll": f"{search_center.lat},{search_center.lon}",
+            "query": q,
+            "radius": radius_m,
+            "limit": min(max(limit, 1), 50),
+            "sort": "RELEVANCE",
+            "fields": "fsq_place_id,name,latitude,longitude,location,categories,distance",
+        }
+        headers = {
+            "Authorization": f"Bearer {self.foursquare_api_key}",
+            "X-Places-Api-Version": FOURSQUARE_API_VERSION,
+            "Accept": "application/json",
+            "User-Agent": HTTP_USER_AGENT,
+        }
+        # Foursquare Places API exposes daily quota via X-RateLimit-Remaining but
+        # also enforces an undocumented short-window burst cap that returns 429.
+        # Retry a couple of times with exponential backoff before giving up.
+        data: Optional[Dict[str, Any]] = None
+        max_attempts = 3 if self.low_cost_mode else 4
+        last_error: Optional[str] = None
+        for attempt in range(max_attempts):
+            try:
+                resp = requests.get(
+                    FOURSQUARE_SEARCH_URL, params=params, headers=headers, timeout=20
+                )
+                if resp.status_code == 429:
+                    retry_after = resp.headers.get("Retry-After")
+                    sleep_s = (
+                        float(retry_after)
+                        if retry_after and retry_after.replace(".", "", 1).isdigit()
+                        else self._backoff_seconds(attempt)
+                    )
+                    last_error = f"429 (retry-after={retry_after or 'n/a'})"
+                    logger.info(
+                        "Foursquare rate-limited (attempt %d/%d) - sleeping %.2fs",
+                        attempt + 1, max_attempts, sleep_s,
+                    )
+                    time.sleep(min(sleep_s, 5.0))
+                    continue
+                resp.raise_for_status()
+                data = resp.json()
+                break
+            except Exception as exc:
+                last_error = str(exc)
+                if attempt < max_attempts - 1:
+                    time.sleep(self._backoff_seconds(attempt))
+                    continue
+                logger.warning(
+                    "Foursquare venue search failed (%s) - falling through to Mapbox/OSM",
+                    last_error,
+                )
+                return []
+        if data is None:
+            logger.warning(
+                "Foursquare venue search gave up after %d attempts (%s) - falling through",
+                max_attempts, last_error or "unknown",
+            )
+            return []
+
+        items: List[CandidateRestaurant] = []
+        for row in data.get("results", []) or []:
+            lat = row.get("latitude")
+            lon = row.get("longitude")
+            if lat is None or lon is None:
+                continue
+            try:
+                pos = Location(lat=float(lat), lon=float(lon))
+            except (TypeError, ValueError):
+                continue
+            rating = row.get("rating")
+            try:
+                rating_proxy = (
+                    max(0.0, min(1.0, float(rating) / 10.0))
+                    if rating is not None
+                    else 0.5
+                )
+            except (TypeError, ValueError):
+                rating_proxy = 0.5
+            location = row.get("location") or {}
+            place_name = location.get("formatted_address") or row.get("name") or ""
+            web_signals: Dict[str, Any] = {}
+            if rating is not None:
+                try:
+                    web_signals["foursquare_rating"] = float(rating)
+                except (TypeError, ValueError):
+                    pass
+            price = row.get("price")
+            if price is not None:
+                try:
+                    web_signals["price_tier"] = int(price)
+                except (TypeError, ValueError):
+                    pass
+            hours = row.get("hours") or {}
+            if isinstance(hours, dict) and "open_now" in hours:
+                web_signals["open_now"] = bool(hours.get("open_now"))
+            categories = row.get("categories") or []
+            if categories:
+                web_signals["foursquare_category"] = categories[0].get("name", "")
+            items.append(
+                CandidateRestaurant(
+                    name=str(row.get("name") or "Unknown")[:80],
+                    lat=pos.lat,
+                    lon=pos.lon,
+                    place_name=place_name,
+                    mapbox_relevance=1.0,
+                    distance_to_center_km=self.haversine_km(center, pos),
+                    rating_proxy=rating_proxy,
+                    venue_category=venue_type,
+                    web_signals=web_signals,
+                    data_source="foursquare",
+                )
+            )
+
+        items = self._filter_by_intersection(items, intersection, center)
+        if items:
+            logger.info(
+                "Foursquare search returned %d candidates (type=%s, radius=%dm)",
+                len(items), venue_type, radius_m,
+            )
+        return items
 
     def _filter_by_intersection(
         self,
@@ -2351,21 +2647,100 @@ class MeetHalfwayRecommender:
         show_user_points: bool = True,
         iso_a: Optional[Any] = None,
         iso_b: Optional[Any] = None,
+        baseline_midpoint: Optional[Tuple[float, float]] = None,
+        panel_label: Optional[str] = None,
+        candidate_rank_labels: bool = True,
+        extra_origins: Optional[List[Location]] = None,
+        extra_origin_labels: Optional[List[str]] = None,
+        extra_isos: Optional[List[Any]] = None,
+        per_user_modes: Optional[List[str]] = None,
     ) -> str:
+        """Render the interactive folium map for a recommendation.
+
+        Extension kwargs (all optional and backward-compatible):
+          * ``baseline_midpoint``: ``(lat, lon)`` tuple. Renders an orange CSS
+            diamond marker labelled "Geometric midpoint (baseline)" for the
+            paper's N=2 panel.
+          * ``panel_label``: caption such as ``"(a) N=2 — driving 15 mi each"``
+            pinned to the top-left of the map via a small HTML overlay.
+          * ``candidate_rank_labels``: if True (default), top-K venue markers
+            also show a ``#i`` rank chip via a DivIcon next to the cutlery pin.
+          * ``extra_origins`` / ``extra_origin_labels`` / ``extra_isos``: extra
+            participants beyond ``a`` and ``b`` (e.g. participant ``c`` for
+            N=3). ``extra_origin_labels`` is aligned with ``extra_origins``
+            and ``extra_isos`` is aligned the same way.
+          * ``per_user_modes``: mode strings (``"drive"``/``"walk"``/``"transit"``)
+            aligned with ``[a, b] + extra_origins``. When provided, each
+            participant's isochrone polygon is styled with a mode-specific
+            color and labelled accordingly.
+        """
         if not HAS_FOLIUM:
             logger.warning("folium not installed - skipping map generation.")
             return ""
 
-        m = folium.Map(location=[center.lat, center.lon], zoom_start=14)
+        m = folium.Map(location=[center.lat, center.lon], zoom_start=12)
 
-        # Each person's reachable isochrone (R_A / R_B), visualizing "meet halfway" fairness
+        # Build the unified participants list (a, b, *extra_origins) plus their
+        # isochrones / labels / modes so per-user-mode rendering is uniform.
+        origins: List[Location] = [a, b]
+        if extra_origins:
+            origins.extend(extra_origins)
+        default_origin_labels = ["Start A", "Start B"]
+        if extra_origins:
+            for i in range(len(extra_origins)):
+                if extra_origin_labels and i < len(extra_origin_labels):
+                    default_origin_labels.append(extra_origin_labels[i])
+                else:
+                    default_origin_labels.append(f"Start {chr(ord('C') + i)}")
+        isos: List[Any] = [iso_a, iso_b]
+        if extra_isos:
+            isos.extend(extra_isos)
+
+        # Mode-specific palette used for both iso polygons and origin pins when
+        # per_user_modes is supplied. Falls back to the legacy blue/red scheme
+        # for the first two participants when no per-user list is given.
+        _MODE_COLORS = {
+            "drive": "#2563eb",    # blue
+            "walk": "#16a34a",     # green
+            "transit": "#a855f7",  # purple
+        }
+        _MODE_PIN_COLORS = {
+            "drive": "blue",
+            "walk": "green",
+            "transit": "purple",
+        }
+        legacy_iso_colors = ["#2563eb", "#dc2626"]
+        legacy_pin_colors = ["blue", "red"]
+
+        def _iso_color_for(idx: int) -> str:
+            if per_user_modes and idx < len(per_user_modes):
+                return _MODE_COLORS.get(per_user_modes[idx], "#6b7280")
+            if idx < len(legacy_iso_colors):
+                return legacy_iso_colors[idx]
+            # Cycle through a palette for additional participants without modes
+            extra_palette = ["#16a34a", "#a855f7", "#f59e0b", "#0ea5e9"]
+            return extra_palette[(idx - len(legacy_iso_colors)) % len(extra_palette)]
+
+        def _pin_color_for(idx: int) -> str:
+            if per_user_modes and idx < len(per_user_modes):
+                return _MODE_PIN_COLORS.get(per_user_modes[idx], "darkblue")
+            if idx < len(legacy_pin_colors):
+                return legacy_pin_colors[idx]
+            extra_pins = ["green", "purple", "orange", "cadetblue"]
+            return extra_pins[(idx - len(legacy_pin_colors)) % len(extra_pins)]
+
+        # Each person's reachable isochrone (R_i), visualizing "meet halfway" fairness
         if HAS_SHAPELY:
-            for iso, color, label in [
-                (iso_a, "#2563eb", "A reachable isochrone (R_A)"),
-                (iso_b, "#dc2626", "B reachable isochrone (R_B)"),
-            ]:
+            for idx, iso in enumerate(isos):
                 if iso is None or getattr(iso, "is_empty", True):
                     continue
+                color = _iso_color_for(idx)
+                mode_suffix = (
+                    f" ({per_user_modes[idx]})"
+                    if per_user_modes and idx < len(per_user_modes)
+                    else ""
+                )
+                label = f"{default_origin_labels[idx]} reachable isochrone{mode_suffix}"
                 try:
                     folium.GeoJson(
                         mapping(iso),
@@ -2378,7 +2753,7 @@ class MeetHalfwayRecommender:
                 except Exception as exc:
                     logger.warning("Failed to render an individual isochrone: %s", exc)
 
-        # Isochrone intersection layer (shared reachable area R_A ∩ R_B)
+        # Isochrone intersection layer (shared reachable area)
         if HAS_SHAPELY and intersection is not None and not intersection.is_empty:
             try:
                 folium.GeoJson(
@@ -2389,29 +2764,57 @@ class MeetHalfwayRecommender:
                         "weight": 3,
                         "fillOpacity": 0.28,
                     },
-                    tooltip="Isochrone intersection R_A ∩ R_B (area both A and B can reasonably reach)",
+                    tooltip="Shared reachable area (intersection of all participants)",
                 ).add_to(m)
             except Exception as exc:
                 logger.warning("Failed to render the isochrone: %s", exc)
 
-        # Start points A / B
+        # Start points for each participant
         if show_user_points:
-            for loc, label, color in [(a, "Start A", "blue"), (b, "Start B", "red")]:
+            for idx, loc in enumerate(origins):
                 folium.Marker(
                     [loc.lat, loc.lon],
-                    tooltip=label,
-                    icon=folium.Icon(color=color, icon="user", prefix="fa"),
+                    tooltip=default_origin_labels[idx],
+                    icon=folium.Icon(
+                        color=_pin_color_for(idx), icon="user", prefix="fa"
+                    ),
                 ).add_to(m)
 
-        # Fair center
+        # Fair center (pipeline weighted midpoint, "fair" not geometric)
         folium.Marker(
             [center.lat, center.lon],
             tooltip="Fair center",
             icon=folium.Icon(color="purple", icon="map-marker", prefix="fa"),
         ).add_to(m)
 
+        # Optional geometric-midpoint baseline marker (orange CSS diamond)
+        if baseline_midpoint is not None:
+            try:
+                bm_lat, bm_lon = baseline_midpoint
+                diamond_html = (
+                    '<div style="transform: rotate(45deg); width: 16px; '
+                    'height: 16px; background:#f59e0b; '
+                    'border:2px solid #b45309; box-shadow:0 0 4px rgba(0,0,0,0.4);">'
+                    '</div>'
+                )
+                folium.Marker(
+                    [bm_lat, bm_lon],
+                    tooltip="Geometric midpoint (baseline)",
+                    icon=folium.DivIcon(
+                        icon_size=(20, 20),
+                        icon_anchor=(10, 10),
+                        html=diamond_html,
+                    ),
+                ).add_to(m)
+            except Exception as exc:
+                logger.warning("Failed to render baseline midpoint marker: %s", exc)
+
         # Candidate venues
         top_names = {c.name for c in candidates[:top_k]}
+        # Map name -> rank for the top-K, so labels stay stable across redraws.
+        top_rank_by_name = {
+            c.name: i + 1 for i, c in enumerate(candidates[:top_k])
+        }
         surprise_name = surprise.name if surprise else ""
         for c in candidates:
             if c.name == surprise_name:
@@ -2422,8 +2825,10 @@ class MeetHalfwayRecommender:
                 color, icon_name = "gray", "cutlery"
 
             iso_tag = "✓" if c.in_isochrone_intersection else "△"
+            rank = top_rank_by_name.get(c.name)
+            rank_prefix = f"#{rank} " if (candidate_rank_labels and rank) else ""
             tip = (
-                f"{iso_tag} {c.name}<br>"
+                f"{iso_tag} {rank_prefix}{c.name}<br>"
                 f"score: {c.final_score:.3f}<br>"
                 f"gap: {c.fairness_delta_minutes:.1f} min<br>"
                 f"status: {c.web_signals.get('status', '?')}<br>"
@@ -2437,6 +2842,47 @@ class MeetHalfwayRecommender:
                 tooltip=folium.Tooltip(tip),
                 icon=folium.Icon(color=color, icon=icon_name, prefix="fa"),
             ).add_to(m)
+
+            # Optional rank chip rendered next to the icon as a DivIcon overlay,
+            # so the static screenshot reads "#1 ... #5" without the user
+            # hovering to see the tooltip.
+            if candidate_rank_labels and rank:
+                chip_html = (
+                    f'<div style="background:#0f9d76;color:white;'
+                    f'border-radius:9px;padding:1px 6px;font-size:11px;'
+                    f'font-weight:700;font-family:Arial,sans-serif;'
+                    f'box-shadow:0 1px 2px rgba(0,0,0,0.3);'
+                    f'white-space:nowrap;">#{rank}</div>'
+                )
+                folium.Marker(
+                    [c.lat, c.lon],
+                    icon=folium.DivIcon(
+                        icon_size=(36, 18),
+                        icon_anchor=(-6, 36),  # offset to the lower-right of the pin
+                        html=chip_html,
+                    ),
+                ).add_to(m)
+
+        # Top-left panel caption overlay (e.g. "(a) N=2 — driving 15 mi each")
+        if panel_label:
+            try:
+                from branca.element import Element  # type: ignore
+                safe_label = (
+                    panel_label.replace("&", "&amp;")
+                    .replace("<", "&lt;").replace(">", "&gt;")
+                )
+                overlay_html = (
+                    '<div style="position: fixed; top: 12px; left: 12px; '
+                    'z-index: 9999; background: rgba(255,255,255,0.92); '
+                    'padding: 6px 12px; border: 1px solid #d1d5db; '
+                    'border-radius: 6px; font-family: Arial, sans-serif; '
+                    'font-size: 14px; font-weight: 600; color: #111827; '
+                    'box-shadow: 0 1px 3px rgba(0,0,0,0.15);">'
+                    f'{safe_label}</div>'
+                )
+                m.get_root().html.add_child(Element(overlay_html))
+            except Exception as exc:
+                logger.warning("Failed to render panel label overlay: %s", exc)
 
         m.save(output_path)
         logger.info("Interactive map saved: %s", output_path)
@@ -2541,6 +2987,8 @@ async def async_main(args: argparse.Namespace) -> None:
     if not tavily_key:
         logger.info("TAVILY_API_KEY not set: falling back to keyless DuckDuckGo search.")
 
+    foursquare_api_key = os.getenv("FOURSQUARE_API_KEY", "").strip() or None
+
     engine = MeetHalfwayRecommender(
         mapbox_token=mapbox_token,
         ors_api_key=ors_api_key,
@@ -2549,6 +2997,7 @@ async def async_main(args: argparse.Namespace) -> None:
         openai_key=openai_key,
         openai_model=openai_model,
         openai_base=openai_base,
+        foursquare_api_key=foursquare_api_key,
         transport=args.transport,
         isochrone_minutes=args.isochrone_minutes,
         low_cost_mode=args.low_cost,
