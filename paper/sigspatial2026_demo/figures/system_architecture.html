@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { background: #ffffff; }
+  #canvas {
+    width: 900px; height: 652px; padding: 20px 26px 16px;
+    font-family: "Segoe UI", Helvetica, Arial, sans-serif;
+    color: #1f2733; background: #ffffff;
+    display: flex; flex-direction: column; gap: 8px;
+  }
+  .band-label { font-size: 12px; font-weight: 700; letter-spacing: .04em;
+    text-transform: uppercase; color: #8a93a3; margin: 2px 0 1px 2px; }
+
+  /* Frontend bands */
+  .fe { border: 1.6px solid #3b6fb6; background: #eaf2fb; border-radius: 10px;
+        padding: 11px 16px; }
+  .fe .ttl { font-size: 16px; font-weight: 700; color: #245293; }
+  .fe .sub { font-size: 13.5px; color: #36506f; margin-top: 3px; line-height: 1.45; }
+
+  /* flow arrow with side label */
+  .flow { display: flex; align-items: center; justify-content: center;
+          gap: 12px; height: 30px; }
+  .arrow { font-size: 22px; line-height: 1; color: #6b7686; }
+  .flow .cap { font-size: 12px; color: #6b7686; font-style: italic; }
+
+  /* Backend container */
+  .be { border: 1.8px dashed #9aa5b5; border-radius: 12px; background: #fafbfd;
+        padding: 10px 14px 12px; position: relative; }
+  .be-title { position: absolute; top: -10px; left: 16px; background: #ffffff;
+    padding: 0 8px; font-size: 12.5px; font-weight: 700; font-style: italic;
+    color: #59657a; }
+  .stage-row { display: flex; align-items: stretch; gap: 0; margin-top: 9px; }
+  .stage-row:first-of-type { margin-top: 6px; }
+  .stage { flex: 1; border: 1.4px solid #c2cad6; background: #ffffff;
+    border-radius: 8px; padding: 8px 13px; font-size: 14px; line-height: 1.34;
+    display: flex; align-items: center; }
+  .stage b { color: #1f3a5f; }
+  .stage .note { color: #7a8597; font-size: 12.5px; }
+  .step-n { display:inline-block; min-width: 18px; height:18px; line-height:18px;
+    text-align:center; border-radius:50%; background:#3b6fb6; color:#fff;
+    font-size:11px; font-weight:700; margin-right:9px; flex:none; }
+
+  /* connector + external service tag */
+  .conn { width: 150px; flex: none; display: flex; align-items: center; gap: 7px;
+    padding-left: 10px; }
+  .conn.empty { visibility: hidden; }
+  .dash { flex: 1; border-top: 1.6px dashed #d39a4f; height: 0; }
+  .ext { border: 1.4px dashed #d39a4f; background: #fdf4e6; border-radius: 7px;
+    padding: 5px 9px; font-size: 12px; color: #8a5a18; line-height: 1.28;
+    text-align: center; width: 118px; flex: none; }
+  .ext b { color: #6f4a14; font-weight: 700; }
+</style>
+</head>
+<body>
+  <div id="canvas">
+
+    <div class="band-label">Frontend &middot; Streamlit (input)</div>
+    <div class="fe">
+      <div class="ttl">Participant query</div>
+      <div class="sub">starting locations &nbsp;&middot;&nbsp; travel modes (walk / drive / transit) &nbsp;&middot;&nbsp;
+        venue preference &nbsp;&middot;&nbsp; time / radius constraints
+        <br>single shared form &nbsp;or&nbsp; privacy-separated room mode (each participant submits independently)</div>
+    </div>
+
+    <div class="flow"><span class="arrow">&#8595;</span>
+      <span class="cap">query: locations, modes, preferences, constraints</span></div>
+
+    <div class="be">
+      <div class="be-title">Backend engine &mdash; meethalfway.py</div>
+
+      <div class="stage-row">
+        <div class="stage"><span class="step-n">1</span><span><b>Geocoding</b> &amp; query parsing</span></div>
+        <div class="conn empty"><div class="dash"></div><div class="ext"></div></div>
+      </div>
+
+      <div class="stage-row">
+        <div class="stage"><span class="step-n">2</span><span>Per-participant <b>isochrones</b> (reachable areas) &rarr; <b>shared feasible region</b> (intersection)</span></div>
+        <div class="conn"><div class="dash"></div><div class="ext"><b>ORS / Mapbox</b><br>isochrones</div></div>
+      </div>
+
+      <div class="stage-row">
+        <div class="stage"><span class="step-n">3</span><span><b>POI retrieval</b> within the region <span class="note">(+ natural-barrier subtraction)</span></span></div>
+        <div class="conn"><div class="dash"></div><div class="ext"><b>Foursquare</b> / Overpass / Nominatim</div></div>
+      </div>
+
+      <div class="stage-row">
+        <div class="stage"><span class="step-n">4</span><span>Per-participant <b>travel-time</b> &amp; fairness gap <span class="note">(+ live / LLM enrichment)</span></span></div>
+        <div class="conn"><div class="dash"></div><div class="ext"><b>Tavily</b> / DuckDuckGo / LLM</div></div>
+      </div>
+
+      <div class="stage-row">
+        <div class="stage"><span class="step-n">5</span><span><b>Fairness-aware ranking</b> &amp; explanation</span></div>
+        <div class="conn empty"><div class="dash"></div><div class="ext"></div></div>
+      </div>
+    </div>
+
+    <div class="flow"><span class="arrow">&#8595;</span>
+      <span class="cap">results: ranked venues, per-participant travel times, fairness scores, GeoJSON geometry</span></div>
+
+    <div class="band-label">Frontend &middot; Streamlit (output)</div>
+    <div class="fe">
+      <div class="ttl">Interactive recommendation</div>
+      <div class="sub">map: participant origins &middot; reachable areas &middot; shared region &middot; ranked venues
+        &nbsp;&middot;&nbsp; venue cards with travel-time comparison &amp; reasons &nbsp;&middot;&nbsp; optional group voting</div>
+    </div>
+
+  </div>
+</body>
+</html>

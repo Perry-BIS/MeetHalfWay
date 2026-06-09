@@ -1838,8 +1838,8 @@ def _compute_direct_recommendations() -> Dict[str, Any]:
             "negotiation_applied": False,
             "too_far": False,
             "mode": "isochrone",
-            "isochrone_minutes_a": minutes_a,
-            "isochrone_minutes_b": minutes_b,
+            "isochrone_miles_a": miles_a,
+            "isochrone_miles_b": miles_b,
         }
     else:
         # Isochrones did not overlap (or ORS down) → radius-tolerance negotiation.
@@ -2991,6 +2991,63 @@ def _build_invite_link(room_id: str) -> str:
     return f"{base_url}/?room={quote(str(room_id or '').strip())}"
 
 
+def _build_invite_email_parts(sender_name: str, room_id: str, link: str) -> Tuple[str, str]:
+    name = (sender_name or "").strip() or "A friend"
+    subject = f"[MeetHalfway] {name} invited you to find a meeting spot"
+    body = (
+        f"Hi,\n\n"
+        f"{name} is using MeetHalfway to find a meeting place that's fair for everyone.\n\n"
+        f"Open this link to join the room:\n{link}\n\n"
+        f"Or enter Room ID: {room_id}\n\n"
+        f"— MeetHalfway"
+    )
+    return subject, body
+
+
+def _build_mailto_link(to_addr: str, sender_name: str, room_id: str, link: str) -> str:
+    subject, body = _build_invite_email_parts(sender_name, room_id, link)
+    to_part = quote((to_addr or "").strip(), safe="@")
+    return f"mailto:{to_part}?subject={quote(subject)}&body={quote(body)}"
+
+
+def _smtp_configured() -> bool:
+    return bool(os.getenv("SMTP_USER") and os.getenv("SMTP_PASSWORD"))
+
+
+def _send_invite_email_smtp(to_addr: str, sender_name: str, room_id: str, link: str) -> Tuple[bool, str]:
+    """Send the invite email via SMTP. Returns (ok, message)."""
+    import smtplib
+    from email.message import EmailMessage
+
+    host = os.getenv("SMTP_HOST", "smtp.gmail.com")
+    port = int(os.getenv("SMTP_PORT", "587"))
+    user = os.getenv("SMTP_USER", "")
+    password = os.getenv("SMTP_PASSWORD", "")
+    from_addr = os.getenv("SMTP_FROM", user)
+
+    to_addr = (to_addr or "").strip()
+    if not to_addr or "@" not in to_addr:
+        return False, "Recipient email looks invalid."
+    if not user or not password:
+        return False, "SMTP_USER / SMTP_PASSWORD not set in .env."
+
+    subject, body = _build_invite_email_parts(sender_name, room_id, link)
+    msg = EmailMessage()
+    msg["Subject"] = subject
+    msg["From"] = from_addr
+    msg["To"] = to_addr
+    msg.set_content(body)
+
+    try:
+        with smtplib.SMTP(host, port, timeout=15) as server:
+            server.starttls()
+            server.login(user, password)
+            server.send_message(msg)
+        return True, f"Sent to {to_addr}."
+    except Exception as exc:
+        return False, f"Send failed: {exc}"
+
+
 def _build_room_page_link(room_id: str, page: str = "check_result") -> str:
     base_url = _get_app_base_url()
     room_value = quote(str(room_id or "").strip())
@@ -3750,9 +3807,19 @@ def render_generate_link_page():
         _inject_number_input_validation_messages()
         your_name = st.text_input("Your Name")
 
-        st.markdown('<label>Your Email <span style="color: #999; font-size: 0.85em;">(optional)</span></label>', unsafe_allow_html=True)
-        _ = st.text_input("Your Email", label_visibility="collapsed", placeholder="you@example.com")
-        st.caption("💡 You can provide your email to receive the latest notifications.")
+        st.markdown("**Invite the other participant by email** <span style='color: #999; font-size: 0.85em;'>(optional)</span>", unsafe_allow_html=True)
+        invitee_email = st.text_input(
+            "Recipient email",
+            value=st.session_state.get("invitee_email", ""),
+            placeholder="them@example.com",
+            label_visibility="collapsed",
+            key="invitee_email_input",
+        )
+        st.session_state.invitee_email = invitee_email
+        if _smtp_configured():
+            st.caption("💡 We'll prefill an invite for your mail client, or send it directly from the demo's SMTP account.")
+        else:
+            st.caption("💡 We'll prefill a draft for your mail client — you press Send. (Set SMTP_USER/SMTP_PASSWORD in .env to send automatically.)")
 
         st.session_state.room_id = room_id
 
@@ -3801,6 +3868,39 @@ def render_generate_link_page():
             st.info(f"Share this link or Room ID **{st.session_state.generated_room_id}** with the other {int(st.session_state.participant_count) - 1} participant(s) to start!")
             if "localhost" in st.session_state.generated_link or "127.0.0.1" in st.session_state.generated_link:
                 st.warning("This invite currently points to a local-only address. For another device to open it, run the app on a LAN/public URL first or set PUBLIC_APP_URL in your environment.")
+
+            invitee_email_value = (st.session_state.get("invitee_email", "") or "").strip()
+            if invitee_email_value:
+                st.markdown("**📧 Send the invite**")
+                send_cols = st.columns(2) if _smtp_configured() else st.columns(1)
+
+                mailto_url = _build_mailto_link(
+                    invitee_email_value,
+                    st.session_state.get("creator_name", "") or st.session_state.get("user_name", ""),
+                    st.session_state.generated_room_id,
+                    st.session_state.generated_link,
+                )
+                with send_cols[0]:
+                    st.link_button(
+                        "✉️ Open in my email client",
+                        mailto_url,
+                        use_container_width=True,
+                        help="Opens your default mail app with the invite pre-filled. You press Send.",
+                    )
+
+                if _smtp_configured():
+                    with send_cols[1]:
+                        if st.button("📤 Send via demo account", use_container_width=True, key="smtp_send_btn"):
+                            ok, message = _send_invite_email_smtp(
+                                invitee_email_value,
+                                st.session_state.get("creator_name", "") or st.session_state.get("user_name", ""),
+                                st.session_state.generated_room_id,
+                                st.session_state.generated_link,
+                            )
+                            if ok:
+                                st.success(message)
+                            else:
+                                st.error(message)
 
 # ============================================================================
 # Page: Join Link
@@ -3933,9 +4033,16 @@ def render_join_link_page():
         st.session_state.user_name = your_name
         st.session_state.selected_action = "join_link"
 
-        if not your_name:
-            st.warning("Please enter your name to continue")
-        elif st.button("Continue With This Invitation", type="primary", use_container_width=True, key=f"continue_room_{room_from_url}_{role_key}"):
+        name_ready = bool((your_name or "").strip())
+        if not name_ready:
+            st.caption("Enter your name above, then press Tab or Enter to enable the Continue button.")
+        if st.button(
+            "Continue With This Invitation",
+            type="primary",
+            use_container_width=True,
+            key=f"continue_room_{room_from_url}_{role_key}",
+            disabled=not name_ready,
+        ):
             _persist_user_profile(room_from_url, role_key, your_name)
             st.session_state.current_page = resume_page
             st.rerun()
@@ -4004,11 +4111,19 @@ def render_join_link_page():
         st.session_state.user_name = your_name
         st.session_state.selected_action = "join_link"
 
-        if room_id and your_name:
-            if st.button("Continue", type="primary", use_container_width=True, key="continue_manual_join"):
-                _persist_user_profile(room_id, your_role, your_name)
-                st.session_state.current_page = resume_page
-                st.rerun()
+        ready_to_continue = bool(room_id) and bool((your_name or "").strip())
+        if not ready_to_continue:
+            st.caption("Fill in the Room ID and your name, then press Tab or Enter to enable the Continue button.")
+        if st.button(
+            "Continue",
+            type="primary",
+            use_container_width=True,
+            key="continue_manual_join",
+            disabled=not ready_to_continue,
+        ):
+            _persist_user_profile(room_id, your_role, your_name)
+            st.session_state.current_page = resume_page
+            st.rerun()
 
 
 # ============================================================================
