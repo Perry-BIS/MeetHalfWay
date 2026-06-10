@@ -2326,6 +2326,15 @@ class MeetHalfwayRecommender:
         b_fatigue = 1.3 if tired_person == "b" else 1.0
 
         for c in candidates:
+            # Hard filter: venues confirmed closed are unrecommendable, not low-quality.
+            # Exclude them from ranking instead of stacking a large numeric penalty
+            # (previous behavior: -1.4 status_penalty, which clamped final_score to 0
+            # via max(0, raw) but conflated "closed" with "low score").
+            if str(c.web_signals.get("status", "")).lower() == "closed":
+                c.final_score = 0.0
+                c.score_breakdown = {"closed": 1.0}
+                continue
+
             rest = Location(c.lat, c.lon)
             da_km = self.haversine_km(a, rest)
             db_km = self.haversine_km(b, rest)
@@ -2373,11 +2382,12 @@ class MeetHalfwayRecommender:
 
             web_bonus = float(c.web_signals.get("promo_bonus", 0.0))
             web_penalty = float(c.web_signals.get("risk_penalty", 0.0))
+            # "closed" is handled by the hard filter at the top of the loop;
+            # this dict only soft-penalizes the uncertain case.
             status = str(c.web_signals.get("status", "uncertain")).lower()
             status_penalty = {
                 "open": 0.0,
                 "uncertain": 0.12,
-                "closed": 1.4,
             }.get(status, 0.12)
             queue_level = str(c.web_signals.get("queue_level", "unknown")).lower()
             queue_penalty = {
@@ -2389,9 +2399,11 @@ class MeetHalfwayRecommender:
             crowd_index = min(max(float(c.web_signals.get("crowd_index", 0.5)), 0.0), 1.0)
             wait_minutes = max(float(c.web_signals.get("estimated_wait_minutes", 0.0)), 0.0)
             crowd_penalty = max(queue_penalty, crowd_index * 0.22 + min(wait_minutes / 180.0, 0.25))
-            # Mid-high popularity/density is best: too cold or too hot both lose points
+            # Mid-high popularity/density is best: too cold or too hot both lose points.
+            # Rating is already weighted via w_rating; keep this term purely density-based
+            # to avoid double-counting rating in the composite score.
             density_balance = _clip01(1.0 - abs(crowd_index - 0.55) / 0.55)
-            c.venue_popularity_score = _clip01(0.55 * rating_component + 0.45 * density_balance)
+            c.venue_popularity_score = density_balance
             iso_bonus = 0.4 if c.in_isochrone_intersection else -0.6
 
             spatiotemporal_bonus = (

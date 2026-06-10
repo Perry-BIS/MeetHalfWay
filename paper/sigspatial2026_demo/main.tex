@@ -1,279 +1,393 @@
+%%
+%% This is file `sigconf.tex',
+%% generated with the docstrip utility.
+%%
+%% The original source files were:
+%%
+%% samples.dtx  (with options: `all,proceedings,sigconf')
+%%
+%% IMPORTANT NOTICE:
+%%
+%% For the copyright see the source file.
+%%
+%% Any modified versions of this file must be renamed
+%% with new filenames distinct from sigconf.tex.
+%%
+%% For distribution of the original source see the terms
+%% for copying and modification in the file samples.dtx.
+%%
+%% This generated file may be distributed as long as the
+%% original source files, as listed above, are part of the
+%% same distribution. (The sources need not necessarily be
+%% in the same archive or directory.)
+%%
+%%
+%% Commands for TeXCount
+%TC:macro \cite [option:text,text]
+%TC:macro \citep [option:text,text]
+%TC:macro \citet [option:text,text]
+%TC:envir table 0 1
+%TC:envir table* 0 1
+%TC:envir tabular [ignore] word
+%TC:envir displaymath 0 word
+%TC:envir math 0 word
+%TC:envir comment 0 0
+%%
+%% The first command in your LaTeX source must be the \documentclass
+%% command.
+%%
+%% For submission and review of your manuscript please change the
+%% command to \documentclass[manuscript, screen, review]{acmart}.
+%%
+%% When submitting camera ready or to TAPS, please change the command
+%% to \documentclass[sigconf]{acmart} or whichever template is required
+%% for your publication.
+%%
+%%
 \documentclass[sigconf]{acmart}
-
-% =====================================================================
-% ACM SIGSPATIAL 2026 — Demonstration Track — STRUCTURE SKELETON
-% Official requirements: https://sigspatial2026.sigspatial.org/demo-submission.html
-%   - Up to 4 pages INCLUDING references.
-%   - Demo paper title must end with [Demo] in the submitted version.
-%   - Single-blind: fill the author/affiliation fields before submission.
-%
-% NOTE: This file is a WRITING TEMPLATE. The prose is intentionally left
-% for the author to write. Each section gives a word-count target and
-% bullet guidance (as % comments) plus a visible [TODO ...] placeholder.
-% Delete the placeholders as you fill in each section.
-% =====================================================================
-
+%%
+%% \BibTeX command to typeset BibTeX logo in the docs
 \AtBeginDocument{%
   \providecommand\BibTeX{{%
     Bib\TeX}}}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+\usepackage{placeins}
+\raggedbottom
+\emergencystretch=3em
+\makeatletter
+\let\@vspace\@vspace@orig
+\let\@vspacer\@vspacer@orig
+\global\@ACM@balancefalse
+\makeatother
 
-\copyrightyear{2026}
-\acmYear{2026}
-\acmConference[SIGSPATIAL '26]{Proceedings of the 34th ACM International Conference on Advances in Geographic Information Systems}{November 3--6, 2026}{Riverside, CA, USA}
-\acmBooktitle{Proceedings of the 34th ACM International Conference on Advances in Geographic Information Systems (SIGSPATIAL '26), November 3--6, 2026, Riverside, CA, USA}
-% Fill DOI/ISBN for camera-ready only:
-% \acmDOI{TODO}
-% \acmISBN{TODO}
+%% ===================================================================
+%% Fit-to-4-pages: SPACING ONLY (no wording changed). Remove any line
+%% to relax the compression. See per-line comments for what each does.
+%% ===================================================================
+\makeatletter
+\g@addto@macro\normalsize{%             % keep reduced skips after every \section
+  \setlength\abovedisplayskip{3.5pt plus 1pt minus 1pt}%
+  \setlength\belowdisplayskip{3.5pt plus 1pt minus 1pt}%
+  \setlength\abovedisplayshortskip{1.5pt plus 1pt}%
+  \setlength\belowdisplayshortskip{2.5pt plus 1pt minus 1pt}%
+}
+\makeatother
+\setlength{\textfloatsep}{5pt plus 2pt minus 2pt}  % gap between float and text
+\setlength{\floatsep}{5pt plus 2pt minus 2pt}
+\setlength{\intextsep}{5pt plus 2pt minus 2pt}
+%% ===================================================================
 
-\title{MeetHalfway AI: Fair and Privacy-Separated Meeting-Place Recommendation for Small Groups [Demo]}
+\setcopyright{none}
+\settopmatter{printacmref=false}  % was true; hides the ACM Reference Format box (saves ~6-8 lines). Set true for camera-ready.
+\renewcommand\footnotetextcopyrightpermission[1]{}
+\acmConference[Submitted for review]{Submitted for review}{2026}{USA}
+\acmBooktitle{Submitted for review}
+\acmDOI{}
+\acmISBN{}
 
-% ---- Single-blind: fill before submission ----
-\author{TODO: First Author}
+
+%%
+%% Submission ID.
+%% Use this when submitting an article to a sponsored event. You'll
+%% receive a unique submission ID from the organizers
+%% of the event, and this ID should be used as the parameter to this command.
+%%\acmSubmissionID{123-A56-BU3}
+
+%%
+%% For managing citations, it is recommended to use bibliography
+%% files in BibTeX format.
+%%
+%% You can then either use BibTeX with the ACM-Reference-Format style,
+%% or BibLaTeX with the acmnumeric or acmauthoryear sytles, that include
+%% support for advanced citation of software artefact from the
+%% biblatex-software package, also separately available on CTAN.
+%%
+%% Look at the sample-*-biblatex.tex files for templates showcasing
+%% the biblatex styles.
+%%
+%%
+%% The majority of ACM publications use numbered citations and
+%% references.  The command \citestyle{authoryear} switches to the
+%% "author year" style.
+%%
+%% If you are preparing content for an event
+%% sponsored by ACM SIGGRAPH, you must use the "author year" style of
+%% citations and references.
+%% Uncommenting
+%% the next command will enable that style.
+%%\citestyle{acmauthoryear}
+
+
+%%
+%% end of the preamble, start of the body of the document source.
+\begin{document}
+
+%%
+%% The "title" command has an optional parameter,
+%% allowing the author to define a "short title" to be used in page headers.
+\title{MeetHalfway: An Interactive, Explainable Demo for Fair Group Meeting-Place Recommendation}
+
+%%
+%% The "author" command and its associated commands are used to define
+%% the authors and their affiliations.
+%% Of note is the shared affiliation of the first two authors, and the
+%% "authornote" and "authornotemark" commands
+%% used to denote shared contribution to the research.
+\author{Jiali Liang}
+\email{plhh6@umkc.edu}
 \affiliation{%
-  \institution{TODO: Institution}
-  \city{TODO}
-  \country{TODO}}
-\email{TODO@example.edu}
+  \institution{University of Missouri-Kansas City}
+  \city{Kansas City}
+  \state{Missouri}
+  \country{USA}
+}
 
-\author{TODO: Second Author}
+\author{Jainil Anilkumar Patel}
+\email{japmyy@umkc.edu}
 \affiliation{%
-  \institution{TODO: Institution}
-  \city{TODO}
-  \country{TODO}}
-\email{TODO@example.edu}
+  \institution{University of Missouri-Kansas City}
+  \city{Kansas City}
+  \state{Missouri}
+  \country{USA}
+}
 
-\renewcommand{\shortauthors}{TODO et al.}
+\author{Mei-Ling Shyu}
+\email{shyum@umkc.edu}
+\affiliation{%
+  \institution{University of Missouri-Kansas City}
+  \city{Kansas City}
+  \state{Missouri}
+  \country{USA}
+}
 
-% =====================================================================
-% ABSTRACT  — target 150–220 words
-%   Cover, in order:
-%   (1) the spatial decision problem (where should a small group meet?);
-%   (2) the gap: midpoints / POI search / chat assistants ignore travel-time
-%       fairness across MULTIPLE people and expose raw locations;
-%   (3) what the system does: shared travel-time region via isochrone
-%       intersection over 2–5 participants, barrier subtraction, fairness-aware
-%       ranking, live signals, explanation, privacy-separated input;
-%   (4) what the demo lets attendees do (one sentence).
-% =====================================================================
+\author{Shu-Ching Chen}
+\email{s.chen@umkc.edu}
+\affiliation{%
+  \institution{University of Missouri-Kansas City}
+  \city{Kansas City}
+  \state{Missouri}
+  \country{USA}
+}
+
+%%
+%% By default, the full list of authors will be used in the page
+%% headers. Often, this list is too long, and will overlap
+%% other information printed in the page headers. This command allows
+%% the author to define a more concise list
+%% of authors' names for this purpose.
+\renewcommand{\shortauthors}{Liang et al.}
+
+%%
+%% The abstract is a short summary of the work to be presented in the
+%% article.
 \begin{abstract}
-% TODO: write 150–220 words following the guidance above.
-\textit{[TODO — Abstract, 150--220 words.]}
+  Deciding where a small group should meet for dinner or a casual outing is a routine coordination task that today's tools handle poorly: map and food-discovery apps are built for one searcher at a time, so the group reconciles by hand. We present MeetHalfway, an interactive geospatial demo for everyday small-group meeting-place recommendation. A single room collects each participant's origin, travel mode (walking, driving, transit), commute budget, and venue preference; the system computes per-participant reachable regions, extracts the shared feasible region, retrieves candidate venues, estimates per-participant travel effort, and ranks candidates with a mode-aware equity score that pulls the recommendation toward participants on slower modes rather than the geometric centroid. For each top venue, a lightweight context module turns web-search snippets into a short structured status note (open/closed, queue level, wait estimate, brief reason) via a temperature-zero JSON-constrained LLM call with a keyword fallback. Attendees inspect each recommendation through a card exposing per-participant travel effort, score components, contextual signals, and whether the result satisfies strict shared reachability or is a relaxed alternative.
 \end{abstract}
 
-% ---- CCS Concepts (provided — do not change) ----
+%%
+%% The code below is generated by the tool at http://dl.acm.org/ccs.cfm.
+%% Please copy and paste the code instead of the example below.
+%%
 \begin{CCSXML}
 <ccs2012>
    <concept>
-       <concept_id>10002951.10003260.10003277</concept_id>
+       <concept_id>10002951.10003260.10003282</concept_id>
        <concept_desc>Information systems~Geographic information systems</concept_desc>
        <concept_significance>500</concept_significance>
-       </concept>
+   </concept>
    <concept>
-       <concept_id>10002951.10003260.10003300</concept_id>
+       <concept_id>10003120.10003121.10003124.10010866</concept_id>
+       <concept_desc>Human-centered computing~Visualization systems and tools</concept_desc>
+       <concept_significance>300</concept_significance>
+   </concept>
+   <concept>
+       <concept_id>10002951.10003227.10003351</concept_id>
        <concept_desc>Information systems~Location based services</concept_desc>
-       <concept_significance>300</concept_significance>
-       </concept>
-   <concept>
-       <concept_id>10003120.10003121.10003129</concept_id>
-       <concept_desc>Human-centered computing~Interactive systems and tools</concept_desc>
-       <concept_significance>300</concept_significance>
-       </concept>
+       <concept_significance>500</concept_significance>
+   </concept>
 </ccs2012>
 \end{CCSXML}
 
 \ccsdesc[500]{Information systems~Geographic information systems}
-\ccsdesc[300]{Information systems~Location based services}
-\ccsdesc[300]{Human-centered computing~Interactive systems and tools}
+\ccsdesc[300]{Human-centered computing~Visualization systems and tools}
+\ccsdesc[500]{Information systems~Location based services}
 
-% ---- Keywords (provided) ----
-\keywords{meeting-place recommendation; isochrones; spatial fairness; location-based services; explainable GeoAI; privacy-aware interaction}
+\keywords{Group meeting-place recommendation, Shared reachability, Travel-effort fairness, Explainable recommendation, Isochrone intersection, Interactive geospatial system}
 
-\begin{document}
 
+%%
+%% This command processes the author and affiliation and title
+%% information and builds the first part of the formatted document.
 \maketitle
 
-% =====================================================================
+\begin{figure}[!t]
+\centering
+\includegraphics[width=\columnwidth,height=0.20\textheight,keepaspectratio]{figures/teaser_meethalfway.png}
+\caption{MeetHalfway interface. Colored polygons are per-participant reachable regions; their intersection is the shared feasible region. Gray pins are candidate venues; the red pin is the top-ranked recommendation.}
+\Description{A map view with overlapping isochrone polygons around participant origins, gray candidate-venue pins inside the shared region, and a red recommended-venue pin near the center.}
+\label{fig:teaser}
+\end{figure}
+
 \section{Introduction}
-% target 450–600 words. Structure: Problem -> why existing tools fail -> four contributions.
-%
-% Paragraph 1 — Problem (~150 words):
-%   - Choosing where a small group (2–5 people) should meet is a frequent spatial decision.
-%   - It is not just "central on a map": it must be FAIR in travel effort, reachable,
-%     open/suitable, and easy to explain. Motivate with a concrete small-group scenario.
-%
-% Paragraph 2 — Why existing tools fail (~200 words). Name the four comparison classes:
-%   - Geometric "halfway finders": midpoint can land across a river/highway; ignores travel time.
-%   - POI / map search: finds popular places but does not make multi-person travel-time fairness explicit.
-%   - Map chat assistants ("map GPT"): fluent but not grounded in reachability or a fairness objective.
-%   - Itinerary planners: optimize a single user's route, not equity across several participants.
-%   - Also: most expose each person's exact location to the others.
-%
-% Paragraph 3 — Contributions. Use the enumerated list below (already structural).
-%
-\textit{[TODO — Introduction, 450--600 words: problem, why existing tools fail, then the four contributions below.]}
 
-\medskip\noindent The demo makes four contributions:
-\begin{enumerate}
-    \item \textbf{Multi-participant isochrone fairness.}
-    % TODO: 1–2 sentences — shared feasible region as the intersection of 2–5 travel-time isochrones.
-    \textit{[TODO]}
-    \item \textbf{Meeting-context-aware venue filtering.}
-    % TODO: 1–2 sentences — POI retrieval in the shared region + live/semantic enrichment.
-    \textit{[TODO]}
-    \item \textbf{Explainable, fairness-aware ranking.}
-    % TODO: 1–2 sentences — score with travel-time-balance term and readable reasons.
-    \textit{[TODO]}
-    \item \textbf{Privacy-separated interaction.}
-    % TODO: 1–2 sentences — each participant submits location independently; no peer exposure.
-    \textit{[TODO]}
-\end{enumerate}
+Imagine four colleagues finishing work in different parts of a city and trying to share a coffee. One drives, one takes a bus, one walks, one comes from downtown; each has a different patience for travel. They want a real cafe that everyone can reach with comparable effort---rarely the geometric midpoint of the group. Today this is usually settled by everyone searching on Yelp or Google Maps separately and reconciling by hand: a small but recurring everyday coordination cost.
 
-% =====================================================================
-\section{Demonstration Experience}
-% target 350–500 words. What attendees will SEE and DO (present/future tense, concrete).
-% Cover:
-%   - Room-based flow: a host creates a room; 2–5 participants join and submit location + preferences.
-%   - Private input: each participant's exact location stays server-side; peers see only the result.
-%   - Inputs per participant: location, travel mode, radius/time tolerance, availability, budget,
-%     venue type, cuisine/activity, dietary needs, ambiance, meeting context (business/date/friends).
-%   - On-screen output: map with each isochrone + the shared overlap region, ranked venue cards,
-%     per-venue score breakdown + natural-language reason, warnings (infeasible / conflicting constraints),
-%     optional voting to converge on a final pick.
-%   - Live interaction to show on stage: add/remove a participant, shrink one person's tolerance,
-%     switch driving->walking, change ambiance — and watch the fair region and ranking update.
-%   - Host-city tie-in: a scripted Riverside, CA scenario.
-\textit{[TODO — Demonstration Experience, 350--500 words.]}
+The literature touches related problems but not this one. Aggregate nearest-neighbor and optimal-meeting-point queries on road networks minimize SUM, MAX, or MIN aggregation of network distance from a fixed set of starts~\cite{papadias2005ann,yan2011omp,kim2023meeting}; optimal-sequenced-route group-meetup queries assume each participant first visits a sequence of category-typed errands before converging~\cite{chen2021groupmeetup}; envy-free group trip planning enforces pairwise distance-disparity bounds among participants as a hard constraint~\cite{singhal2022envyfree}; pre-event meeting-point recommenders dispatch attendees to nearby train stations to relieve congestion around event venues~\cite{asukai2018meeting}; ride-sharing meeting-point GIS work places interurban pickup spots~\cite{czioska2017gis,czioska2017location,khetarpaul2012mining}; and POI recommenders~\cite{sanchez2022poi,liu2013poi,wang2024embracing} suggest venues from a single user's preferences. Group venue recommendation has been studied with mobility traces and social weights~\cite{zhang2019gevr} and with diversification objectives~\cite{dacruz2024diversification}; group-fairness aggregation has been formalized as a relevance-minus-disagreement objective for non-spatial recommender settings~\cite{ameryahia2009group,stratigi2020fair,wang2023fairness}. These works each cover part of the problem but not the everyday interactive case where a room of friends each enters origin, travel mode, and venue preference \emph{now} under heterogeneous mode-and-budget constraints and expects a ranked list of real, reachable venues with a per-candidate explanation.
+
+We present MeetHalfway, an interactive geospatial demo for everyday small-group meeting-place recommendation. A shared room collects every participant's origin, travel mode (walking, driving, transit), commute budget, and venue preference. From these, MeetHalfway computes per-participant isochrone reachable regions, extracts their shared feasible region, retrieves real candidate venues inside it, estimates per-participant travel effort, and ranks candidates with a mode-aware fairness-aware score that pulls the recommendation closer to participants on slower modes (Figure~\ref{fig:teaser}). A lightweight context module then turns web-search snippets for each top candidate into a short structured status note, so a user can read a brief venue summary without leaving the interface.
+
+This paper contributes (i) a \emph{room-based collective input interface} that replaces the everyone-searches-Yelp-separately status quo with one shared form for daily small-group coordination; (ii) an \emph{isochrone-intersection pipeline with mode-aware fairness} and an explicit strict-vs.-relaxed feasibility status when the strict shared region collapses; and (iii) an \emph{explainable interface} that exposes the shared reachable region, per-participant travel effort, the score components, and the strict-vs.-relaxed feasibility status for every ranked venue.
+
+
+
+\section{System Overview}
+\label{sec:overview}
+
+\noindent\textbf{User workflow.} A session begins when one user creates a meeting room and shares its link. Each participant enters their own \emph{starting location}, \emph{travel mode} (walking, driving, transit), \emph{commute budget} (a travel-cost limit interpreted as a distance or time threshold), and \emph{venue preference} (cafe, restaurant, library, etc.); the room carries group-level context---a shared venue category and an ambiance preference (quiet/balanced/lively). This keeps the workflow symmetric: no single user controls everyone's constraints.
+
+\noindent\textbf{Interface and explanation.} On submission, a single map canvas shows each participant's starting location and reachable region, the shared feasible region (their intersection), candidate venues, and the ranked recommendations; a side panel lists the ranking. Selecting a venue opens an explanation card with participant-level travel effort, the four score components from Section~\ref{sec:rank}, contextual venue signals (rating from the POI API; mutual venue votes and time-slot overlap from participant inputs; open status, queue level, and wait estimate distilled by the LLM from web-search snippets), and whether the result satisfies strict shared reachability or is a relaxed alternative. The same card carries a short \emph{context note} per top candidate: web-search snippets from a Tavily query are passed to an LLM that emits a structured JSON record (open status, queue level, crowd index, wait estimate, one-sentence reason, confidence) at temperature zero, with a keyword-matching fallback. The note is an auxiliary status summary, not a ranking driver; the JSON schema, confidence field, and fallback bound hallucination risk.
+
+\noindent\textbf{Architecture.} Figure~\ref{fig:arch} shows the frontend--backend design. The frontend collects the query, renders the visualization layers above, and displays the explanation card. The backend engine returns ranked candidates with the supporting data---per-participant travel costs, score components, strict/relaxed status, visualization geometry---through the five-stage pipeline of Section~\ref{sec:pipeline}, using external routing and place-search services with service-specific fall-backs rather than failing the workflow.
 
 \begin{figure}[t]
 \centering
-\fbox{\begin{minipage}{0.94\linewidth}
-\small
-\textbf{Interactive workflow.}
-Participants $\rightarrow$ private check-in and preferences $\rightarrow$ multi-party isochrone / radius overlap $\rightarrow$ POI retrieval $\rightarrow$ live signal and semantic extraction $\rightarrow$ fairness-aware ranking $\rightarrow$ map, cards, explanations, optional voting.
-% TODO: replace this box with a real annotated UI screenshot (map + overlap + ranked cards).
-\end{minipage}}
-\caption{MeetHalfway AI turns a small-group meeting decision into a visible spatial reasoning pipeline.}
-\label{fig:workflow}
+\includegraphics[width=0.78\columnwidth]{figures/system_architecture.png}
+\caption{MeetHalfway system architecture from participant query to ranked, map-based recommendation.}
+\Description{The architecture diagram shows participant inputs flowing into a frontend interface and a backend geospatial pipeline. The backend performs geocoding, isochrone computation, feasible-region construction, POI retrieval, travel-effort and fairness estimation, and ranking, using external map, routing, and POI services before returning explainable recommendations to the frontend.}
+\label{fig:arch}
 \end{figure}
 
-% =====================================================================
-\section{System Design}
-% target 700–900 words TOTAL across the three subsections below.
+\section{Recommendation Pipeline}
+\label{sec:pipeline}
 
-\subsection{Multi-participant Fairness}
-% ~280–360 words. Generalize the two-person design to a group of n participants (2–5).
-% The math scaffold below is ready to use — write the surrounding explanation as prose.
-%
-% Shared feasible region over participants P = {1..n} with isochrones R_i:
-%   S = \bigcap_{i=1}^{n} R_i
-% Empty-intersection handling: report "too far apart" or relax to a union/threshold mode (mark as less fair).
-% Per-candidate p travel times T(l_i, p); fairness measured on the SPREAD across participants, e.g.
-%   gap(p) = max_i T(l_i,p) - min_i T(l_i,p)
-% Penalty grows faster than linearly so very unbalanced options drop quickly (e.g. exp form).
-% Mention natural-barrier subtraction (rivers/highways) from S; radius/time-tolerance fallback when
-% exact isochrones are unavailable.
-\textit{[TODO — Multi-participant Fairness, ~280--360 words. Explain the formulas below.]}
+This section describes how MeetHalfway computes a ranked list of candidate meeting places. Let $U = \{u_1, u_2, \ldots, u_n\}$ denote the set of participants ($n \geq 2$). For each participant $u_i$, the system records a starting location $s_i$, a travel mode $m_i$, and a \emph{travel-cost budget} $\phi_i$. The travel cost is a generalized scalar threshold whose unit is selected once per query and applied to all participants; depending on the user setting, it is instantiated as a travel-time limit (minutes) or a travel-distance limit (miles). We write $\rho(s_i, x, m_i)$ for the corresponding travel cost from $s_i$ to a location $x$ under mode $m_i$, as returned by the external routing service. The pipeline proceeds through five stages.
+
+\subsection{Isochrone Generation}
+\label{sec:iso}
+
+For each participant $u_i$, the system computes a reachable region $I_i$, the set of locations whose routing-service cost from $s_i$ does not exceed $\phi_i$:
 \begin{equation}
-S \;=\; \bigcap_{i=1}^{n} R_i ,
-\qquad
-\mathrm{gap}(p) \;=\; \max_{i} T(l_i, p) \;-\; \min_{i} T(l_i, p).
-\label{eq:fairness}
+  I_i \;=\; \{\, x : \rho(s_i, x, m_i) \leq \phi_i \,\}.
+  \label{eq:isochrone}
 \end{equation}
+$I_i$ is realized as the road-network polygon returned by the OpenRouteService isochrone for mode $m_i$ at threshold $\phi_i$, using either its distance or time isochrone endpoint depending on the active travel-cost unit. Because each participant can use a different mode and budget, $I_i$ is computed independently; participants with larger budgets or faster modes contribute larger reachable regions. When the routing service is unavailable, the system falls back to a mode-aware ellipsoidal buffer around $s_i$ sized so that its on-the-ground radius matches $\phi_i$ under the active travel-cost unit; the fall-back is logged on the server side and rendered identically to a real isochrone in the map view.
 
-\subsection{POI Retrieval and Semantic Enrichment}
-% ~220–280 words. Cover:
-%   - Retrieval fallback chain: Mapbox geocoding/POI -> OpenStreetMap Overpass -> Nominatim.
-%   - Candidates tagged by whether they lie inside S; ~10 venue categories supported.
-%   - Live signals: async retrieval (Tavily / DuckDuckGo) + optional Yelp rating/review counts.
-%   - Semantic extraction: LLM converts unstructured snippets into a compact JSON object
-%     (open status, queue level, crowd index, est. wait, promo bonus, risk penalty, confidence, reason),
-%     with a deterministic keyword fallback for robustness.
-\textit{[TODO — POI Retrieval and Semantic Enrichment, ~220--280 words.]}
+\subsection{Shared Feasible Region}
+\label{sec:region}
 
-\subsection{Ranking and Explanation}
-% ~220–280 words. Cover the composite score and how it becomes user-facing explanation.
-% Score scaffold (adapt symbols to your text):
-%   score(p) = w_d D(p) + w_r R(p) + w_f F(p) + B_web(p)
-%              - P_risk(p) - P_crowd(p) + B_iso(p) + B_st(p)
-%   where F rewards small fairness gap, B_iso rewards candidates inside S, and B_st aggregates
-%   availability overlap, radius tolerance, popularity balance, time preference, and mutual votes.
-% Then: the UI exposes each component as a score breakdown + a plain-language reason
-% (why it is fair, whether availability overlaps, whether crowd/queue risk applies).
-\textit{[TODO — Ranking and Explanation, ~220--280 words. Explain the score below.]}
+Individual reachable regions are converted to a group-level feasibility set by polygon intersection. The strict shared feasible region is
 \begin{equation}
-\begin{split}
-\mathrm{score}(p) = &\ w_d D(p) + w_r R(p) + w_f F(p) + B_{\mathrm{web}}(p)\\
-& - P_{\mathrm{risk}}(p) - P_{\mathrm{crowd}}(p) + B_{\mathrm{iso}}(p) + B_{\mathrm{st}}(p).
-\end{split}
-\label{eq:score}
+  R \;=\; \bigcap_{i=1}^{n} I_i .
+  \label{eq:intersection}
 \end{equation}
+A location inside $R$ is reachable by every participant under the current constraints. When $R \neq \emptyset$, the pipeline runs in \emph{strict mode}, retrieving candidates inside $R$. When $R = \emptyset$, it switches to \emph{relaxed mode}: the search space is broadened to $\bigcup_i I_i$, and every candidate that violates one or more participants' budgets is tagged for the relaxation penalty in Section~\ref{sec:rank}. The strict/relaxed status is surfaced in the explanation card so the user sees the degradation explicitly rather than receiving a silent fall-back.
 
-% =====================================================================
-\section{Implementation}
-% target 300–450 words. Tech stack + fallback design + running-prototype status.
-% Cover:
-%   - Two main files: meethalfway.py (engine: geocoding, isochrone fetch, Shapely intersection,
-%     POI search, async web enrichment, LLM/keyword extraction, scoring, explanation, Folium map)
-%     and app_streamlit_new.py (UI: room state, preference forms, direct + privacy-separated flows,
-%     time-slot negotiation, candidate cards, warnings, voting).
-%   - Stack: Python 3.10+, Streamlit, Folium, Shapely, httpx/asyncio, OpenAI-compatible chat API,
-%     env-var configuration.
-%   - Resilience: explicit fallback/warning state so failures degrade into explainable
-%     approximations (OSM/Overpass, DuckDuckGo, keyword extraction, distance buffers) instead of crashes.
-%   - Privacy is interaction-level (separate submission), not cryptographic — note the production
-%     hardening path (replace local JSON room-state with encrypted/transient storage).
-\textit{[TODO — Implementation, 300--450 words.]}
+\subsection{POI Retrieval}
+\label{sec:poi}
 
-\begin{table}[t]
-\caption{Core demo modules and user-visible value.}
-\label{tab:modules}
-\centering
+Within the active region---$R$ in strict mode, $\bigcup_i I_i$ in relaxed mode---the system retrieves a candidate set $C = \{c_1, \ldots, c_k\}$ via three filters. \emph{Spatial filtering} keeps POIs whose coordinates lie inside the active region. \emph{Semantic filtering} keeps only POIs matching the requested category, removing reachable-but-irrelevant places. \emph{Multi-source retrieval} queries Foursquare Places, the Mapbox Geocoding/POI API, OpenStreetMap Overpass, and Nominatim in turn so the candidate set degrades gracefully when one source returns too few results. If the strict filter empties $C$ (small $R$ or sparse local POI density), it is bypassed conservatively and candidates are re-ranked by distance to the centroid of $R$, with the bypass surfaced in the explanation so imbalance appears as a low equity score rather than a silent failure.
+
+\subsection{Travel-Effort Estimation}
+\label{sec:rte}
+
+Travel cost plays two roles. \emph{Absolute} reachability is gated by Equation~\eqref{eq:isochrone}: the OpenRouteService isochrone $I_i$ encodes the road-network cost $\rho(s_i, x, m_i)$, so the spatial filter of Section~\ref{sec:poi} cannot let a candidate the routing service deems unreachable for participant $i$ enter the ranking stage. For the \emph{relative} per-(participant, candidate) effort that drives mode-aware ranking and the explanation card, we compute
+\begin{equation}
+  \mathbf{T}_j \;=\; \bigl(T_{1,j}, \ldots, T_{n,j}\bigr), \qquad
+  T_{i,j} \;=\; \hat{t}(s_i, c_j, m_i),
+  \label{eq:tvec}
+\end{equation}
+where $\hat{t}$ is the great-circle distance from $s_i$ to $c_j$ divided by a per-mode reference speed (walking $5$, driving $40$, transit $20$\,km/h). $\hat{t}$ is a deliberate proxy: a routing API call per (participant, candidate) pair would cost $O(n \cdot |C|)$ external calls and break the free-tier quota; the proxy holds routing at $O(n)$ per query while staying mode-specific, so the equity term still pulls ranking toward slow-mode participants (Section~\ref{sec:rank}). The road-network gate still prevents recommending unreachable candidates; a batched ORS/Mapbox matrix call over the filtered $|C|$ is the production-tier upgrade, and the explanation card surfaces displayed times as estimates.
+
+\subsection{Fairness-Aware Ranking}
+\label{sec:rank}
+
+Candidates are ranked by a composite score combining a participant-level commute-equity term, venue suitability, contextual venue signals, and a relaxation penalty:
+\begin{equation}
+  S(c_j) \;=\; \alpha\, E(c_j) + \beta\, V(c_j) + \gamma\, C(c_j) - \delta\, P(c_j),
+  \label{eq:score}
+\end{equation}
+where each component is min-max normalized to $[0,1]$ before weighting so the terms are scale-comparable, and the weights $\alpha,\beta,\gamma,\delta$ are non-negative. The \emph{Commute Equity Term} $E$ is a clipped, gap-based metric of participant travel-effort balance:
+\begin{equation}
+  E(c_j) \;=\; \max\!\Bigl(0,\; 1 - \tfrac{\max_i T_{i,j} - \min_i T_{i,j}}{G_{\mathrm{ref}}(c_j)}\Bigr),
+  \label{eq:fair}
+\end{equation}
+with $G_{\mathrm{ref}}(c_j) = \sum_i T_{i,j}$, so the same absolute gap counts as a larger imbalance among short trips than among long ones. $E$ itself is mode-agnostic; mode-awareness enters through $T_{i,j}$, already normalized by mode $m_i$ in Equation~\eqref{eq:tvec}, so slower-mode participants contribute larger $T$ and the $E$-maximizer shifts toward them. Absolute travel burden is bounded above by each per-participant budget $\phi_i$ and pushed down by the centrality term $D$ below. \emph{Venue suitability} $V$ combines a rating proxy with a crowd-density balance term that penalizes both over- and under-crowded venues. \emph{Contextual venue signal} $C$ is itself a normalized weighted sum of sub-signals: centrality $D(c_j)=\max(0,1-d_{\mathrm{center}}(c_j)/d_{\max})$ (with $d_{\mathrm{center}}$ the haversine distance to the commute-tolerance-weighted participant centroid), an ambiance-target term $A(c_j)$ tied to the room's quiet/balanced/lively preference $\tau$, an isochrone-intersection indicator, and soft participant-input signals (mutual venue votes, time-slot availability overlap, shared time-slot votes), each clipped to $[0,1]$ with its own sub-weight and surfaced per-candidate in the explanation card. Open/closed status and wait-time estimates from web snippets attenuate $C$ as soft penalties; venues whose status is confirmed closed are removed before ranking rather than down-weighted. \emph{Relaxation penalty} $P(c_j)=0$ for $c_j \in R$, and grows with budget violations in relaxed mode; subtracting $\delta P(c_j)$ deprioritizes relaxed candidates without removing them. Algorithm~\ref{alg:rank} evaluates $S(c_j)$ in the form used by the prototype.
+
+Relative to prior work, $E$ is a soft min-max relaxation of the MAX-aggregate ANN objective~\cite{papadias2005ann} and a soft, additive analogue of the hard envy-free distance-disparity bound~\cite{singhal2022envyfree}, blended with relevance-like terms in the relevance-minus-disagreement style~\cite{ameryahia2009group} so the system still returns a ranked list when no perfectly equitable candidate exists.
+
+\begin{algorithm}[!htbp]
 \small
-\begin{tabular}{@{}p{0.24\linewidth}p{0.27\linewidth}p{0.32\linewidth}@{}}
-\toprule
-\textbf{Module} & \textbf{Implementation} & \textbf{Demo value}\\
-\midrule
-Multi-party fairness & \textit{[TODO]} & \textit{[TODO]}\\
-POI retrieval        & \textit{[TODO]} & \textit{[TODO]}\\
-Live signals         & \textit{[TODO]} & \textit{[TODO]}\\
-Semantic filter      & \textit{[TODO]} & \textit{[TODO]}\\
-Explanation UI       & \textit{[TODO]} & \textit{[TODO]}\\
-\bottomrule
-\end{tabular}
-% TODO: fill cells from your code (Shapely/ORS/Mapbox; Overpass/Nominatim; Tavily/DuckDuckGo/Yelp;
-% LLM JSON + keyword fallback; Streamlit/Folium score breakdowns).
-\end{table}
+\caption{Fairness-aware ranking}
+\label{alg:rank}
+\begin{algorithmic}[1]
+\Require candidates $C$, participants $U$, shared region $R$
+\Require weights $(\alpha, \beta, \gamma, \delta)$ and sub-weights $(w_D, w_K, w_A)$, ambiance target $\tau$
+\For{each candidate $c_j \in C$}
+  \State $\mathbf{T}_j \gets \bigl(\hat{t}(s_i, c_j, m_i)\bigr)_{i=1}^{n}$
+  \State $\mathrm{gap}(c_j) \gets \max_i T_{i,j} - \min_i T_{i,j}$
+  \State $G_{\mathrm{ref}}(c_j) \gets \max\!\bigl(\sum_i T_{i,j},\, \epsilon\bigr)$
+  \State $E(c_j) \gets \max\!\bigl(0, 1 - \mathrm{gap}(c_j)/G_{\mathrm{ref}}(c_j)\bigr)$
+  \State $V(c_j) \gets \mathrm{suitability}(c_j)$
+  \State $D(c_j) \gets \max\!\bigl(0, 1 - d_{\mathrm{center}}(c_j)/d_{\max}\bigr)$
+  \State $k \gets \mathrm{crowd\_index}(c_j)$
+  \State $K(c_j) \gets \max(0, 1-k);\;\; A(c_j) \gets \max\!\bigl(0, 1 - |k-\tau|/0.85\bigr)$
+  \State $C(c_j) \gets w_D D(c_j) + w_K K(c_j) + w_A A(c_j)$
+  \State $P(c_j) \gets 0$ if $c_j \in R$ else relaxation penalty for budget violations
+  \State $S(c_j) \gets \alpha E(c_j) + \beta V(c_j) + \gamma C(c_j) - \delta P(c_j)$
+\EndFor
+\State \Return $C$ sorted in descending order of $S$
+\end{algorithmic}
+\end{algorithm}
 
-% =====================================================================
-\section{Related Work and Positioning}
-% target 250–350 words. Compare against the FOUR classes, then state positioning.
-%   - Halfway finders / common-meeting-point mining: \cite{khetarpaul2012mining}; ride-sharing meeting
-%     points \cite{czioska2017location,czioska2017gis}; subway-fairness meeting recommendation \cite{kim2023meeting};
-%     group meetup routing \cite{chen2021groupmeetup}.
-%   - POI recommendation (mature; geo/temporal/social/context signals): \cite{sanchez2022poi,liu2013poi}.
-%   - Map chat assistants / LLM geographic reasoning: \cite{wang2024embracing,lv2026reasoning}.
-%   - Itinerary planners: optimize one user's route, not group equity. % TODO: add 1 citation if desired.
-%   Positioning sentence: NOT a new optimal-route theorem; the contribution is integrating
-%   multi-party isochrone fairness + context-aware retrieval + live signals + explanation + privacy
-%   into one interactive, demonstrable system.
-\textit{[TODO — Related Work and Positioning, 250--350 words. Weave the citations above into prose.]}
+The deployed demo uses default high-level weights $\alpha=0.30$, $\beta=0.22$, $\gamma=0.48$, $\delta=1.0$ for the four-term composition of Equation~\eqref{eq:score}, hand-tuned on a small development set; $V$ and $C$ decompose into the normalized sub-signals described above (rating, density balance, centrality $D$, ambiance fit $A$, isochrone membership, mutual votes, time-slot overlap, and time-slot votes), whose sub-weights are fixed at deploy time and surfaced per-candidate in the explanation card. Setting $\delta=1.0$ ensures strictly feasible candidates dominate relaxed ones at equal $E,V,C$.
 
-% =====================================================================
+
+\section{Demonstration}
+
+\begin{figure}[!t]
+\centering
+\includegraphics[width=\columnwidth]{figures/sigspatial2026_map.png}\\[0.4ex]
+{\small (a) Result map for SIGSPATIAL\,2026 attendees: 3 conference-area hotels in Riverside,\,CA enter the room; ranked venues appear in the shared reachable region.}\\[0.6ex]
+\includegraphics[width=\columnwidth]{figures/sigspatial2026_topcard.png}\\[0.3ex]
+{\small (b) Top venue card: travel-effort comparison, score breakdown ($E,V,C,P$), context signals (rating from the POI API; open status, queue level, and wait estimate distilled by the LLM from web snippets), and a short LLM-generated context note from those snippets.}
+\caption{S1, captured live from the SIGSPATIAL\,2026 attendee scenario: three colleagues at three conference-area hotels in Riverside enter one room. The pipeline returns five reachable restaurants ranked by mode-aware fairness and venue suitability, each annotated with a short structured context note from a Tavily web search.}
+\Description{Two stacked screenshots from the live MeetHalfway demo. The top panel shows a downtown Riverside map with three participant pins and several ranked-venue pins clustered nearby. The bottom panel shows the top venue's recommendation card with AI score, fairness gap, reputation, crowd index, a context note, the per-term score breakdown, and a nearby-parking link.}
+\label{fig:scenarios}
+\end{figure}
+
+
+The demo opens on the result page (Figure~\ref{fig:scenarios}), captured live at \url{localhost:8502/?demo_seed=sigspatial2026}; the interface follows Section~\ref{sec:overview}.
+
+\noindent\textbf{S1. Mixed travel modes.} Three attendees at different conference-area Riverside hotels (Marriott on Market\,St, Mission Inn, Hampton Inn near UCR) each pick their own mode---walking, transit, driving---and budget. Their reachable regions differ markedly in shape; guided by the mode-aware equity rule of Section~\ref{sec:rank}, the ranking favors candidates accommodating the slowest-mode participant rather than the geometric centroid.
+
+\noindent\textbf{S2. No strict shared region (relaxed mode).} Two participants start far apart with tight budgets, so no strict shared region exists. The system switches to relaxed mode and broadens the search range (Section~\ref{sec:region}); the interface labels the constraint as relaxed and, per candidate, displays which budgets are exceeded, making the effect of $P(c_j)$ visible.
+
+
 \section{Conclusion}
-% target 120–180 words. Restate what the demo shows (fairness made visible/actionable for small groups),
-% what attendees take away, and why it fits SIGSPATIAL (spatial computation + interactive viz +
-% responsible GeoAI tradeoffs in a running system). One forward-looking sentence (planned evaluation).
-\textit{[TODO — Conclusion, 120--180 words.]}
+\label{sec:conclusion}
+
+We demonstrate fair, explainable, group-aware meeting-place recommendation combining shared reachability, multi-source POI retrieval, per-participant travel-effort estimation, and an equity-aware ranking with strict/relaxed feasibility status in one interactive demo.
 
 \begin{acks}
-% TODO: keep an accurate AI-use disclosure consistent with what was actually used.
-\textit{[TODO — acknowledgements / required generative-AI-use disclosure.]}
+The authors thank the University of Missouri--Kansas City for institutional support. This work received no external funding.
 \end{acks}
 
-% \nocite{*} forces all 9 references in references.bib to appear while the
-% body is still a skeleton. REMOVE it once every reference is cited via \cite{}.
-\nocite{*}
+\FloatBarrier
+
+%%
+%% The next two lines define the bibliography style to be used, and
+%% the bibliography file.
+{\footnotesize
 \bibliographystyle{ACM-Reference-Format}
-\bibliography{references}
+\bibliography{references}\par}
+
+\makeatletter
+\let\@vspace\@vspace@orig
+\let\@vspacer\@vspacer@orig
+\makeatother
 
 \end{document}
+\endinput
+%%
+%% End of file `sigconf.tex'.

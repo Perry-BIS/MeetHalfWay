@@ -89,7 +89,7 @@
   <rect x="60" y="826" width="16" height="16" rx="4" fill="#4a90d9"/>
   <text x="84" y="839" style="font:400 13.5px 'Segoe UI',Arial,sans-serif; fill:#2a4a6a;"><tspan style="font-weight:600;">0.23</tspan> × availability_overlap     — fraction of shared calendar slots</text>
   <rect x="60" y="848" width="16" height="16" rx="4" fill="#4a90d9"/>
-  <text x="84" y="861" style="font:400 13.5px 'Segoe UI',Arial,sans-serif; fill:#2a4a6a;"><tspan style="font-weight:600;">0.18</tspan> × venue_popularity_score   — 0.55 × rating + 0.45 × crowd_density_balance</text>
+  <text x="84" y="861" style="font:400 13.5px 'Segoe UI',Arial,sans-serif; fill:#2a4a6a;"><tspan style="font-weight:600;">0.18</tspan> × venue_popularity_score   — crowd_density_balance (rating handled by w_rating to avoid double-counting)</text>
   <rect x="60" y="870" width="16" height="16" rx="4" fill="#4a90d9"/>
   <text x="84" y="883" style="font:400 13.5px 'Segoe UI',Arial,sans-serif; fill:#2a4a6a;"><tspan style="font-weight:600;">0.20</tspan> × mutual_vote_score        — 0.65 × avg_vote + 0.35 × vote_agreement</text>
   <rect x="60" y="892" width="16" height="16" rx="4" fill="#4a90d9"/>
@@ -127,7 +127,7 @@
   <rect x="264" y="1141" width="106" height="26" rx="10" fill="#fff0c0" stroke="#d0a860" stroke-width="1"/>
   <text x="317" y="1159" text-anchor="middle" style="font:600 12px 'Segoe UI',Arial,sans-serif; fill:#806020;">uncertain: −0.12</text>
   <rect x="380" y="1141" width="96" height="26" rx="10" fill="#ffd8d8" stroke="#d08080" stroke-width="1"/>
-  <text x="428" y="1159" text-anchor="middle" style="font:600 12px 'Segoe UI',Arial,sans-serif; fill:#902020;">closed: −1.40</text>
+  <text x="428" y="1159" text-anchor="middle" style="font:600 12px 'Segoe UI',Arial,sans-serif; fill:#902020;">closed: filtered out</text>
 
   <!-- Queue row -->
   <text x="52" y="1191" style="font:700 13.5px 'Segoe UI',Arial,sans-serif; fill:#2a4a6a;">Queue penalty</text>
