@@ -293,6 +293,38 @@ def _persist_user_location(room_id: str, user_role: str, location: Location, sou
     )
 
 
+def _persist_extra_locations(room_id: str, user_role: str, locations: list[Dict[str, Any]]) -> None:
+    """Persist the user's *additional* starting points (e.g., home + work).
+
+    Stored on the participant record under ``extra_locations``. The primary
+    ``location`` remains the one used by the current matching engine; the
+    extras are surfaced in the UI and reserved for a future overlap pass.
+    """
+    serialised = []
+    for item in locations or []:
+        try:
+            serialised.append({
+                "lat": float(item["lat"]),
+                "lon": float(item["lon"]),
+                "label": str(item.get("label", "") or "").strip(),
+                "source": str(item.get("source", "user-added") or "user-added"),
+                "added_at": str(item.get("added_at") or _utc_timestamp()),
+            })
+        except Exception:
+            continue
+    _upsert_room_participant(
+        room_id,
+        _normalize_user_role(user_role),
+        "extra_locations",
+        serialised,
+    )
+
+
+def _load_extra_locations(room_id: str, user_role: str) -> list[Dict[str, Any]]:
+    raw = _participant_record(room_id, user_role).get("extra_locations")
+    return list(raw) if isinstance(raw, list) else []
+
+
 def _persist_user_preferences(room_id: str, user_role: str, payload: Dict[str, Any]) -> None:
     payload = dict(payload)
     payload["submitted_at"] = _utc_timestamp()
@@ -907,6 +939,51 @@ def _build_half_hour_slots() -> list[str]:
 
 
 TIME_SLOT_OPTIONS = _build_half_hour_slots()
+
+
+def _circles_overlap_miles(
+    loc_a: Optional[Dict[str, Any]],
+    miles_a: Optional[float],
+    loc_b: Optional[Dict[str, Any]],
+    miles_b: Optional[float],
+) -> bool:
+    """Return True iff travel circles (center=loc, radius=miles) overlap on the map.
+
+    Used to pre-validate that a new participant's commute radius can reach
+    every other confirmed participant's reachable area before submission.
+    """
+    if not loc_a or not loc_b or miles_a is None or miles_b is None:
+        return True
+    try:
+        a = Location(float(loc_a["lat"]), float(loc_a["lon"]))
+        b = Location(float(loc_b["lat"]), float(loc_b["lon"]))
+        dist_km = MeetHalfwayRecommender.haversine_km(a, b)
+        radius_km = (float(miles_a) + float(miles_b)) * 1.609344
+        return dist_km <= radius_km
+    except Exception:
+        return True
+
+
+def _allowed_time_slots_for(role_key: str, summary: Dict[str, Any]) -> list[str]:
+    """Intersection of availability slots already submitted by other participants.
+
+    If no one else has submitted yet, returns the full TIME_SLOT_OPTIONS list so
+    the first submitter has the full picker.
+    """
+    participants = summary.get("participants", {}) or {}
+    other_slot_sets: list[set[str]] = []
+    for key, info in participants.items():
+        if key == role_key:
+            continue
+        prefs = (info or {}).get("preferences") or {}
+        slots = prefs.get("availability_slots")
+        if slots:
+            other_slot_sets.append(set(slots))
+    if not other_slot_sets:
+        return list(TIME_SLOT_OPTIONS)
+    shared = set.intersection(*other_slot_sets)
+    return [s for s in TIME_SLOT_OPTIONS if s in shared]
+
 UI_TO_ENGINE_VENUE = {
     "Restaurant": "restaurant",
     "Cafe": "cafe",
@@ -2559,151 +2636,193 @@ def inject_page_styles():
         .poster-hero {
             position: relative;
             overflow: hidden;
-            border-radius: 30px;
+            border-radius: 22px;
             border: 1px solid rgba(85, 117, 158, 0.16);
             background:
                 radial-gradient(circle at 18% 18%, rgba(255,255,255,0.95), transparent 28%),
                 radial-gradient(circle at 82% 24%, rgba(255,255,255,0.7), transparent 22%),
                 linear-gradient(135deg, #fef4f8 0%, #f6fbff 36%, #edf9f2 100%);
-            box-shadow: 0 24px 56px rgba(32, 64, 102, 0.14);
-            padding: 30px 34px 28px;
-            margin-bottom: 18px;
+            box-shadow: 0 18px 40px rgba(32, 64, 102, 0.12);
+            padding: 14px 22px 12px;
+            margin-bottom: 10px;
         }
 
         .hero-kicker {
             display: inline-flex;
             align-items: center;
-            padding: 7px 14px;
+            padding: 3px 10px;
             border-radius: 999px;
             background: rgba(255, 255, 255, 0.78);
             border: 1px solid rgba(65, 102, 155, 0.14);
             color: #35506a;
             font-weight: 700;
-            font-size: 0.9rem;
-            margin-bottom: 14px;
+            font-size: 0.78rem;
+            margin-bottom: 6px;
         }
         .hero-title {
-            font-size: 3rem;
+            font-size: 1.9rem;
             line-height: 1.05;
             font-weight: 900;
             max-width: 760px;
-            margin: 0 0 10px 0;
+            margin: 0 0 4px 0;
         }
 
         .hero-subtitle {
             max-width: 760px;
             color: #496175;
-            font-size: 1.05rem;
-            line-height: 1.65;
-            margin-bottom: 18px;
+            font-size: 0.88rem;
+            line-height: 1.4;
+            margin-bottom: 8px;
         }
 
         .hero-pill-row {
             display: flex;
             flex-wrap: wrap;
-            gap: 10px;
-            margin-bottom: 18px;
+            gap: 6px;
+            margin-bottom: 0;
         }
 
         .hero-pill {
-            padding: 10px 14px;
-            border-radius: 16px;
+            padding: 4px 10px;
+            border-radius: 12px;
             background: rgba(255, 255, 255, 0.8);
             border: 1px solid rgba(66, 99, 139, 0.12);
-            box-shadow: 0 8px 20px rgba(57, 88, 123, 0.08);
+            box-shadow: 0 4px 12px rgba(57, 88, 123, 0.06);
             font-weight: 700;
+            font-size: 0.78rem;
             color: #24415d;
         }
 
         .hero-grid {
             display: grid;
             grid-template-columns: 1.4fr 1fr;
-            gap: 18px;
+            gap: 12px;
+            align-items: center;
         }
 
         .glass-panel {
             background: var(--panel);
             border: 1px solid rgba(81, 113, 151, 0.14);
-            border-radius: 24px;
+            border-radius: 18px;
             box-shadow: var(--shadow);
             backdrop-filter: blur(12px);
-            padding: 22px;
+            padding: 10px;
         }
 
         .poster-metrics {
             display: grid;
             grid-template-columns: repeat(2, minmax(0, 1fr));
-            gap: 12px;
+            gap: 8px;
         }
 
         .metric-card {
             background: var(--panel-strong);
-            border-radius: 18px;
-            padding: 16px;
+            border-radius: 12px;
+            padding: 8px 10px;
             border: 1px solid rgba(76, 109, 150, 0.12);
-            box-shadow: 0 10px 24px rgba(41, 69, 103, 0.08);
+            box-shadow: 0 6px 16px rgba(41, 69, 103, 0.06);
         }
 
         .metric-label {
             color: var(--muted);
-            font-size: 0.86rem;
-            margin-bottom: 8px;
+            font-size: 0.7rem;
+            margin-bottom: 2px;
             font-weight: 700;
+            line-height: 1.2;
         }
 
         .metric-value {
-            font-size: 1.45rem;
+            font-size: 0.92rem;
             font-weight: 800;
             color: var(--ink);
+            line-height: 1.2;
         }
 
         .workflow-grid {
             display: grid;
-            grid-template-columns: repeat(3, minmax(0, 1fr));
-            gap: 14px;
-            margin-bottom: 18px;
+            grid-template-columns: repeat(6, minmax(0, 1fr));
+            gap: 6px;
+            margin-bottom: 0;
+            margin-top: 8px;
+        }
+
+        .home-next-slot {
+            height: 56px;
+        }
+
+        .home-action-card {
+            background: rgba(255,255,255,0.92);
+            border: 1px solid rgba(86, 119, 160, 0.18);
+            border-radius: 14px;
+            padding: 8px 12px 6px 12px;
+            box-shadow: 0 6px 16px rgba(42, 74, 112, 0.06);
+            margin-top: 4px;
+            transition: border-color 0.15s, box-shadow 0.15s;
+        }
+        .home-action-card.selected {
+            border-color: #ff5d8f;
+            box-shadow: 0 8px 22px rgba(255, 93, 143, 0.20);
+            background: linear-gradient(180deg, rgba(255,245,249,0.95), rgba(255,255,255,0.95));
+        }
+        .home-action-icon {
+            font-size: 1.1rem;
+            margin-bottom: 2px;
+        }
+        .home-action-title {
+            color: #1b3a59;
+            font-size: 0.95rem;
+            font-weight: 800;
+            margin-bottom: 2px;
+        }
+        .home-action-note {
+            color: #607489;
+            font-size: 0.78rem;
+            line-height: 1.3;
+            margin-bottom: 0;
         }
 
         .workflow-card {
             background: rgba(255,255,255,0.82);
             border: 1px solid rgba(75, 109, 150, 0.14);
-            border-radius: 24px;
-            padding: 18px;
-            box-shadow: 0 16px 30px rgba(36, 67, 104, 0.08);
-            min-height: 162px;
+            border-radius: 16px;
+            padding: 10px 12px;
+            box-shadow: 0 8px 20px rgba(36, 67, 104, 0.06);
+            min-height: 0;
         }
 
         .workflow-head {
             display: flex;
             align-items: center;
-            gap: 10px;
-            margin-bottom: 10px;
+            gap: 8px;
+            margin-bottom: 4px;
         }
 
         .workflow-no {
-            width: 34px;
-            height: 34px;
+            width: 24px;
+            height: 24px;
             border-radius: 999px;
             display: flex;
             align-items: center;
             justify-content: center;
             color: white;
             font-weight: 900;
-            font-size: 1rem;
-            box-shadow: 0 8px 16px rgba(0,0,0,0.14);
+            font-size: 0.78rem;
+            box-shadow: 0 4px 10px rgba(0,0,0,0.12);
+            flex-shrink: 0;
         }
 
         .workflow-title {
-            font-size: 1.05rem;
+            font-size: 0.88rem;
             font-weight: 800;
             color: var(--ink);
+            line-height: 1.2;
         }
 
         .workflow-card p {
             margin: 0;
             color: #567085;
-            line-height: 1.55;
-            font-size: 0.95rem;
+            line-height: 1.35;
+            font-size: 0.78rem;
         }
 
         .privacy-board {
@@ -3521,75 +3640,89 @@ def _reverse_geocode(lat: float, lon: float) -> str:
 # Page: Home (Introduction)
 # ============================================================================
 def render_home_page():
-    """Render the home introduction page."""
-    st.markdown(
-        """
-        <div class="poster-hero">
-            <div class="hero-grid">
-                <div>
-                    <div class="hero-kicker">Fairness-first meetup planner</div>
-                    <div class="hero-title">MeetHalfway AI</div>
-                    <div class="hero-subtitle">
-                        No more recommendations centered around just one person. We combine commute fairness,
-                        mutual preferences, shared availability, and venue popularity to find truly balanced
-                        places for everyone to meet.
-                    </div>
-                    <div class="hero-pill-row">
-                        <div class="hero-pill">Midpoint + overlap-based recommendations</div>
-                        <div class="hero-pill">Live map of everyone's reachable area</div>
-                        <div class="hero-pill">Place voting + time negotiation</div>
-                    </div>
-                </div>
-                <div class="glass-panel">
-                    <div class="poster-metrics">
-                        <div class="metric-card">
-                            <div class="metric-label">Core Goal</div>
-                            <div class="metric-value">Fairness</div>
-                        </div>
-                        <div class="metric-card">
-                            <div class="metric-label">Map View</div>
-                            <div class="metric-value">Everyone's location + reachable area</div>
-                        </div>
-                        <div class="metric-card">
-                            <div class="metric-label">Recommendation Target</div>
-                            <div class="metric-value">Restaurants / Date spots</div>
-                        </div>
-                        <div class="metric-card">
-                            <div class="metric-label">Interaction Model</div>
-                            <div class="metric-value">Voting + negotiation</div>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+    """Render the home introduction page with embedded role selection."""
 
-    # Workflow steps
+    pending_choice = st.session_state.get("home_pending_action")
+    action_pages = {
+        "generate_link": "generate_link",
+        "join_link": "join_link",
+        "know_position": "know_position",
+    }
+
+    title_col, next_col = st.columns([5, 1], gap="small")
+    with title_col:
+        st.markdown(
+            """
+            <div class="poster-hero">
+                <div class="hero-kicker">Fairness-first meetup planner</div>
+                <div class="hero-title">MeetHalfway AI</div>
+                <div class="hero-subtitle">Find a fair place everyone can reach.</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+    with next_col:
+        st.markdown('<div class="home-next-slot"></div>', unsafe_allow_html=True)
+        if st.button(
+            "Next →",
+            use_container_width=True,
+            type="primary",
+            disabled=(pending_choice not in action_pages),
+            key="home_next_top",
+        ):
+            st.session_state.selected_action = pending_choice
+            st.session_state.current_page = action_pages[pending_choice]
+            st.session_state.home_pending_action = None
+            st.rerun()
+
+    actions = [
+        ("generate_link", "🔗", "Create a new invite", "Start a new room and share an invite link."),
+        ("join_link", "📩", "Join an invite", "Open a room someone shared with you."),
+        ("know_position", "🗺️", "Direct two-person", "Already know both locations? Fill both sides here."),
+    ]
+    cols = st.columns(3, gap="small")
+    for col, (key, icon, title, note) in zip(cols, actions):
+        is_selected = pending_choice == key
+        with col:
+            st.markdown(
+                f"""
+                <div class="home-action-card {'selected' if is_selected else ''}">
+                    <div class="home-action-icon">{icon}</div>
+                    <div class="home-action-title">{title}</div>
+                    <p class="home-action-note">{note}</p>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+            label = "✓ Selected" if is_selected else "Choose this"
+            if st.button(
+                label,
+                key=f"home_pick_{key}",
+                use_container_width=True,
+                type="primary" if is_selected else "secondary",
+            ):
+                st.session_state.home_pending_action = key
+                st.rerun()
+
     colors = ["#3578ff", "#28b36e", "#ff9d2f", "#8c63ff", "#ff5d8f", "#20a3a8"]
     steps = [
-        ("Mark your starting point", "Each person drops a pin on the shared map so everyone can see where they're coming from."),
-        ("Set commute radius", "Choose acceptable travel radius for each side to define a reachable overlap area."),
-        ("Search overlap area", "Find public places only inside the mutually acceptable overlap zone."),
-        ("Vote on places", "Everyone votes independently on the same candidates, with mutual preference prioritized."),
-        ("Align available time", "Combine shared availability with time-slot preferences."),
-        ("Generate final suggestion", "Balance fairness and preference alignment to pick the best venue."),
+        ("Mark start", "Drop a pin (or several) on the shared map."),
+        ("Set radius", "Pick acceptable travel distance for each side."),
+        ("Search overlap", "Find places inside the mutually reachable zone."),
+        ("Vote on places", "Rank your favourites independently."),
+        ("Align time", "Match shared available slots."),
+        ("Final pick", "Best balanced venue, ready to book."),
     ]
-
-    cards = []
-    for idx, (title, note) in enumerate(steps, start=1):
-        cards.append(
-            (
-                f'<div class="workflow-card">'
-                f'<div class="workflow-head">'
-                f'<div class="workflow-no" style="background:{colors[idx - 1]};">{idx}</div>'
-                f'<div class="workflow-title">{title}</div>'
-                f'</div>'
-                f'<p>{note}</p>'
-                f'</div>'
-            )
-        )
+    cards = [
+        f'<div class="workflow-card">'
+        f'<div class="workflow-head">'
+        f'<div class="workflow-no" style="background:{colors[i]};">{i + 1}</div>'
+        f'<div class="workflow-title">{title}</div>'
+        f'</div>'
+        f'<p>{note}</p>'
+        f'</div>'
+        for i, (title, note) in enumerate(steps)
+    ]
     st.markdown(f'<div class="workflow-grid">{"".join(cards)}</div>', unsafe_allow_html=True)
 
 
@@ -4450,7 +4583,25 @@ def render_vote_page():
 
     rec = _load_room_recommendation(room_id)
     if not rec or rec.get("status") != "ready":
-        st.info("Recommendations are not ready yet. Please wait until both people have submitted their details.")
+        summary = _preference_summary(room_id)
+        keys = summary.get("keys", [])
+        participants = summary.get("participants", {}) or {}
+        prefs_pending = [k for k in keys if not (participants.get(k, {}) or {}).get("preferences")]
+        locs_pending = [k for k in keys if not (participants.get(k, {}) or {}).get("location")]
+        st.info("Recommendations are not ready yet.")
+        col_p, col_l = st.columns(2)
+        with col_p:
+            st.metric("Preferences submitted",
+                      f"{len(keys) - len(prefs_pending)}/{len(keys) if keys else 0}")
+            if prefs_pending:
+                st.caption("Waiting on: " + ", ".join(_role_label(k) for k in prefs_pending))
+        with col_l:
+            st.metric("Locations confirmed",
+                      f"{len(keys) - len(locs_pending)}/{len(keys) if keys else 0}")
+            if locs_pending:
+                st.caption("Waiting on: " + ", ".join(_role_label(k) for k in locs_pending))
+        if prefs_pending or locs_pending:
+            st.warning("Once everyone above finishes, the recommendation will be generated automatically and this page will populate.")
         if st.button("Check again"):
             st.rerun()
         return
@@ -4978,9 +5129,80 @@ def render_user_info_step1_page():
     st.markdown("---")
     location = st.session_state.get(f"location_{user_role}")
     if location:
-        st.success("Your location is confirmed.")
+        st.success("Your primary location is confirmed.")
     else:
         st.warning("Please confirm your location to continue.")
+
+    if location and room_id:
+        st.subheader("Additional starting points (optional)")
+        st.caption(
+            "Have more than one place you could meet from — say, home AND work? "
+            "Add them here. They show up on the shared map for everyone, and we "
+            "use them when judging which candidates are reachable for you."
+        )
+
+        extra_state_key = f"extra_locations_{user_role}"
+        if extra_state_key not in st.session_state:
+            st.session_state[extra_state_key] = _load_extra_locations(room_id, user_role)
+
+        existing_extras = st.session_state[extra_state_key]
+        if existing_extras:
+            for idx, item in enumerate(existing_extras):
+                cols = st.columns([5, 1])
+                with cols[0]:
+                    label = item.get("label") or "Unnamed point"
+                    st.markdown(
+                        f"**{idx + 1}. {label}**  "
+                        f"<span style='color:#5b7088;font-size:0.85rem;'>"
+                        f"{float(item['lat']):.5f}, {float(item['lon']):.5f}</span>",
+                        unsafe_allow_html=True,
+                    )
+                with cols[1]:
+                    if st.button("Remove", key=f"remove_extra_{user_role}_{idx}", use_container_width=True):
+                        st.session_state[extra_state_key].pop(idx)
+                        _persist_extra_locations(room_id, user_role, st.session_state[extra_state_key])
+                        st.rerun()
+        else:
+            st.caption("No additional starting points yet.")
+
+        add_cols = st.columns([3, 2, 1])
+        with add_cols[0]:
+            extra_query = st.text_input(
+                "Address of another starting point",
+                placeholder="e.g., 200 NE Missouri Rd, Lee's Summit, MO",
+                key=f"extra_address_{user_role}",
+            )
+        with add_cols[1]:
+            extra_label = st.text_input(
+                "Label",
+                placeholder="Work, gym, parent's place...",
+                key=f"extra_label_{user_role}",
+            )
+        with add_cols[2]:
+            st.markdown('<div style="height: 28px;"></div>', unsafe_allow_html=True)
+            if st.button("Add", key=f"add_extra_{user_role}", type="primary", use_container_width=True,
+                         disabled=not (extra_query or "").strip()):
+                resolved = _geocode_address(extra_query.strip())
+                if resolved is None:
+                    st.error("Could not locate that address. Try a more specific street + city.")
+                else:
+                    new_item = {
+                        "lat": float(resolved.lat),
+                        "lon": float(resolved.lon),
+                        "label": (extra_label or "").strip() or extra_query.strip(),
+                        "source": "user-added",
+                        "added_at": _utc_timestamp(),
+                    }
+                    st.session_state[extra_state_key].append(new_item)
+                    _persist_extra_locations(room_id, user_role, st.session_state[extra_state_key])
+                    st.session_state[f"extra_address_{user_role}"] = ""
+                    st.session_state[f"extra_label_{user_role}"] = ""
+                    st.rerun()
+        st.caption(
+            "Heads up: this build stores your extra points but the recommendation "
+            "engine still treats your primary location as the canonical center. "
+            "Multi-point reachability is rolling out in a follow-up."
+        )
 
 
 # ============================================================================
@@ -5143,13 +5365,35 @@ def render_user_info_step2_page():
             )
 
         with preferences_right:
-            availability_slots = st.multiselect(
-                "When are you free?",
-                options=TIME_SLOT_OPTIONS,
-                format_func=_format_time_slot_label,
-                key=f"availability_slots_{role_label}",
-                help="Pick every 30-minute time block that works for you.",
-            )
+            allowed_slots = _allowed_time_slots_for(role_key, summary)
+            slots_restricted = len(allowed_slots) < len(TIME_SLOT_OPTIONS)
+            if slots_restricted:
+                current = st.session_state.get(f"availability_slots_{role_label}", []) or []
+                pruned = [s for s in current if s in allowed_slots]
+                if pruned != list(current):
+                    st.session_state[f"availability_slots_{role_label}"] = pruned
+            if not allowed_slots:
+                st.warning(
+                    "No time slots remain that work for everyone who has already submitted. "
+                    "Ask them to widen their availability, or pick fewer co-participants."
+                )
+                availability_slots = []
+            else:
+                availability_slots = st.multiselect(
+                    "When are you free?",
+                    options=allowed_slots,
+                    format_func=_format_time_slot_label,
+                    key=f"availability_slots_{role_label}",
+                    help=(
+                        "Only slots that all already-submitted participants chose are shown."
+                        if slots_restricted else
+                        "Pick every 30-minute time block that works for you."
+                    ),
+                )
+                if slots_restricted:
+                    st.caption(
+                        f"Filtered: showing {len(allowed_slots)} slot(s) the rest of the room can also make."
+                    )
 
     st.caption("We keep only the shared time overlap across everyone, and travel mode helps protect people with tighter commute limits.")
     submitted = st.button("Submit Preferences", type="primary", use_container_width=True, key=f"submit_preferences_{role_key}")
@@ -5163,6 +5407,29 @@ def render_user_info_step2_page():
         if missing_fields:
             st.session_state["last_preferences_submit_message"] = (
                 "Please choose " + " and ".join(missing_fields) + " before continuing."
+            )
+            st.session_state["last_preferences_submit_level"] = "warning"
+            st.rerun()
+
+        my_loc_obj = current_location
+        my_loc_dict = (
+            {"lat": my_loc_obj.lat, "lon": my_loc_obj.lon} if my_loc_obj else None
+        )
+        disjoint_partners: list[str] = []
+        if my_loc_dict:
+            for partner_key in partner_keys:
+                partner_info = summary.get("participants", {}).get(partner_key, {}) or {}
+                partner_loc = partner_info.get("location")
+                partner_prefs = partner_info.get("preferences") or {}
+                partner_dist = partner_prefs.get("distance_miles")
+                if partner_loc and partner_dist is not None:
+                    if not _circles_overlap_miles(my_loc_dict, distance, partner_loc, partner_dist):
+                        disjoint_partners.append(partner_key)
+        if disjoint_partners:
+            partner_names = ", ".join(_role_label(k) for k in disjoint_partners)
+            st.session_state["last_preferences_submit_message"] = (
+                f"Your {distance} mi travel circle does not reach {partner_names}. "
+                "Increase your max travel distance, or move closer, so the reachable areas overlap before submitting."
             )
             st.session_state["last_preferences_submit_level"] = "warning"
             st.rerun()
@@ -5256,6 +5523,14 @@ _RIVERSIDE_PARTICIPANTS: list[Dict[str, Any]] = [
     {"name": "Erin (Hunter Park)", "lat": 33.9961, "lon": -117.3645},
 ]
 
+# SIGSPATIAL 2026 conference scenario: three real hotels near the Riverside
+# downtown convention area where conference attendees typically stay.
+_SIGSPATIAL2026_HOTELS: list[Dict[str, Any]] = [
+    {"name": "Riverside Marriott",   "lat": 33.9837, "lon": -117.3729},  # 3400 Market St
+    {"name": "Mission Inn",          "lat": 33.9831, "lon": -117.3719},  # 3649 Mission Inn Ave
+    {"name": "Hampton Inn (UCR)",    "lat": 33.9743, "lon": -117.3550},  # 1620 University Ave
+]
+
 # Default per-participant preferences for demo seeds. Picks five 30-min
 # evening slots (6:00-8:00 PM dinner window) so the overlap is non-empty
 # but not overwhelming.
@@ -5290,6 +5565,13 @@ for _n in (3, 4, 5):
         "participants": _RIVERSIDE_PARTICIPANTS[:_n],
         "label": f"Riverside, CA — {_n}-person group",
     }
+
+# SIGSPATIAL 2026 attendee scenario: 3 conference-area hotels in Riverside.
+_DEMO_SEED_PRESETS["sigspatial2026"] = {
+    "flow": "room",
+    "participants": _SIGSPATIAL2026_HOTELS,
+    "label": "SIGSPATIAL 2026 attendees (3 hotels near venue)",
+}
 
 
 def _seed_direct_flow(preset: Dict[str, Any]) -> None:
@@ -5637,9 +5919,8 @@ def render_navigation():
                     st.session_state.current_page = flow[page_index + 1]
                     st.rerun()
         elif current_page == "home":
-            if st.button("Next", use_container_width=True, type="primary"):
-                st.session_state.current_page = "action_select"
-                st.rerun()
+            # Home page renders its own Next button at the top; skip footer Next.
+            pass
         elif current_page == "action_select":
             # Don't show next button on action_select - let users choose via buttons
             pass
