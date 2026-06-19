@@ -3733,16 +3733,69 @@ def _reverse_geocode(lat: float, lon: float) -> str:
 def render_home_page():
     """Render the home introduction page with embedded role selection."""
 
-    # Home is a single-screen landing: lock it to the viewport so it never
-    # scrolls vertically, and trim the default block padding that left an
-    # empty strip at the bottom. Scoped to this page only — the <style> tag
-    # exists in the DOM solely while the home page is rendered, so the normal
-    # scrolling behaviour returns automatically on every other page.
+    # Home is a single-screen landing: fill the whole viewport (so the content
+    # is comfortably large instead of a small strip at the top) and never scroll
+    # vertically. The block-container becomes a full-height flex column whose
+    # rows grow to share the screen; the type/card sizing is bumped up to match.
+    # Scoped to this page only — the <style> tag exists in the DOM solely while
+    # the home page is rendered, so normal scrolling returns on every other page.
     st.markdown(
         """
         <style>
-        [data-testid="stMain"] { overflow-y: hidden !important; }
-        [data-testid="stMainBlockContainer"] { padding-bottom: 0.75rem !important; }
+        [data-testid="stMain"] { overflow: hidden !important; }
+
+        [data-testid="stMainBlockContainer"] {
+            min-height: 100vh;
+            padding-top: 1.5rem !important;
+            padding-bottom: 1.5rem !important;
+            display: flex;
+            flex-direction: column;
+        }
+        /* The root vertical block fills the viewport and spreads its three
+           sections (hero, action cards, workflow) evenly across the screen. */
+        [data-testid="stMainBlockContainer"] > [data-testid="stVerticalBlock"] {
+            flex: 1 1 auto;
+            justify-content: space-evenly;
+        }
+        /* Streamlit prepends a couple of zero-height element containers (this
+           injected <style>, plus a layout anchor). Pull them out of the flex
+           flow so they don't throw off the even vertical spacing. The <style>
+           rules still apply — display/position on its container doesn't matter. */
+        [data-testid="stMainBlockContainer"] > [data-testid="stVerticalBlock"] > [data-testid="stElementContainer"]:not(:last-child) {
+            position: absolute;
+            width: 0;
+            height: 0;
+            overflow: hidden;
+        }
+
+        /* Larger, comfortable sizing so the content fills the screen. */
+        .poster-hero {
+            padding: 30px 38px;
+            border-radius: 26px;
+            margin-bottom: 0;
+        }
+        .hero-kicker { font-size: 0.95rem; padding: 6px 15px; margin-bottom: 14px; }
+        .hero-title { font-size: 3.1rem; line-height: 1.04; margin-bottom: 12px; }
+        .hero-subtitle { font-size: 1.25rem; margin-bottom: 0; }
+
+        .home-action-card {
+            min-height: 150px;
+            padding: 24px 26px 20px;
+            border-radius: 20px;
+            margin-top: 0;
+        }
+        .home-action-icon { font-size: 2rem; margin-bottom: 12px; }
+        .home-action-title { font-size: 1.35rem; margin-bottom: 8px; }
+        .home-action-note { font-size: 1.02rem; line-height: 1.5; }
+
+        .workflow-grid { gap: 14px; margin-top: 0; }
+        .workflow-card { min-height: 104px; padding: 18px 18px; border-radius: 20px; }
+        .workflow-no { width: 32px; height: 32px; font-size: 0.92rem; }
+        .workflow-title { font-size: 1.04rem; }
+        .workflow-card p { font-size: 0.94rem; line-height: 1.45; }
+
+        /* Keep the top "Next →" button vertically centred beside the hero. */
+        .home-next-slot { height: 68px; }
         </style>
         """,
         unsafe_allow_html=True,
