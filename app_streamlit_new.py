@@ -1662,7 +1662,7 @@ def _apply_business_meeting_fit(candidates: list, is_business: bool) -> list:
         category = str(getattr(candidate, "venue_category", "restaurant") or "restaurant")
         venue_score = {"cafe": 1.0, "restaurant": 0.78, "mall": 0.62}.get(category, 0.35)
         parking_score = 1.0 if getattr(candidate, "parking_recommendations", None) else 0.35
-        business_fit = 0.45 * quiet_score + 0.35 * venue_score + 0.20 * parking_score
+        business_fit = (1/3) * quiet_score + (1/3) * venue_score + (1/3) * parking_score
         candidate.score_breakdown["business_fit"] = round(business_fit, 4)
         candidate.final_score += 0.22 * business_fit
     candidates.sort(key=lambda x: x.final_score, reverse=True)
@@ -1706,7 +1706,14 @@ def _compute_room_recommendations(room_id: str) -> Dict[str, Any]:
         min(75.0, max(0.5, float(p.get("distance_miles", 15) or 15)))
         for p in all_prefs
     ]
-    iso_area = engine.get_multi_isochrone_search_area(loc_objs, miles_list=miles_list, transport=transport)
+    # Per-participant travel modes so each reachable region reflects that
+    # participant's own mode (paper §3.1). The slowest mode yields the smallest
+    # region, which bounds the strict intersection and pulls the recommendation
+    # toward the least-mobile participant.
+    participant_modes = [normalize_transport_mode(p.get("travel_mode")) for p in all_prefs]
+    iso_area = engine.get_multi_isochrone_search_area(
+        loc_objs, miles_list=miles_list, transport=transport, transport_list=participant_modes
+    )
     if iso_area.get("overlap_exists") and iso_area.get("geometry") is not None:
         intersection = iso_area["geometry"]
         area_mode = "isochrone"
@@ -1795,21 +1802,52 @@ def _compute_room_recommendations(room_id: str) -> Dict[str, Any]:
     max_center_dist = max((float(getattr(c, "distance_to_center_km", 0.0) or 0.0) for c in candidates), default=1.0) or 1.0
     ambiance_targets = {"quiet": 0.22, "balanced": 0.55, "lively": 0.82}
     target_ambiance = 0.22 if business_context else sum(ambiance_targets.get(p.get("ambiance_preference", "balanced"), 0.55) for p in all_prefs) / n
+    # Relaxation penalty applies only when no strict shared region exists (the
+    # search fell back to the union of reachable regions, paper §3.5).
+    relaxed_mode = (area_mode == "union_fallback")
+    budget_km_list = [float(p.get("distance_miles", 15) or 15) * 1.60934 for p in all_prefs]
+    participant_labels = summary.get("keys", []) or [f"P{i + 1}" for i in range(len(loc_objs))]
+    # Per-mode reference speeds (km/h) for the mode-aware travel-effort term (paper Eq. 3).
+    mode_speed_kmh = {"walk": 5.0, "transit": 20.0, "drive": 40.0}
     for c in candidates:
         place_loc = Location(float(c.lat), float(c.lon))
         dists = [engine.haversine_km(loc, place_loc) for loc in loc_objs]
-        fairness_gap_km = max(dists) - min(dists) if len(dists) > 1 else 0.0
+        # Mode-aware travel effort (paper Eq. 3): each participant's minutes use
+        # their own mode's reference speed, so slower modes contribute larger
+        # effort and the equity term (Eq. 4) shifts toward them.
+        times_min = [dists[i] / mode_speed_kmh.get(participant_modes[i], 20.0) * 60.0
+                     for i in range(len(loc_objs))]
+        time_gap_min = (max(times_min) - min(times_min)) if len(times_min) > 1 else 0.0
         distance_score = max(0.0, 1.0 - (float(getattr(c, "distance_to_center_km", 0.0) or 0.0) / max_center_dist))
-        fairness_score = max(0.0, 1.0 - fairness_gap_km / 20.0)
+        fairness_score = max(0.0, 1.0 - time_gap_min / max(sum(times_min), 1e-6))  # paper Eq. 4
         rating_score = float(getattr(c, "rating_proxy", 0.5) or 0.5)
         crowd_index = float((getattr(c, "web_signals", {}) or {}).get("crowd_index", 0.5))
         crowd_score = max(0.0, 1.0 - crowd_index)
         ambiance_score = max(0.0, 1.0 - abs(crowd_index - target_ambiance) / 0.85)
-        c.fairness_delta_minutes = fairness_gap_km / 35.0 * 60.0
+        c.fairness_delta_minutes = round(time_gap_min, 1)
         c.best_time_slot = _format_time_slot_label(selected_slots[0]) if (selected_slots and not time_conflict) else ""
         c.time_conflict = time_conflict
         c.group_distance_km = [round(d, 3) for d in dists]
-        c.group_fairness_gap_km = round(fairness_gap_km, 3)
+        c.group_travel_minutes = [round(t, 1) for t in times_min]
+        c.group_fairness_gap_km = round(max(dists) - min(dists), 3) if len(dists) > 1 else 0.0
+        # Relaxation penalty P(c_j): 0 in strict mode; in relaxed mode it grows
+        # with per-participant budget violations, which are also surfaced on the
+        # card so the effect of P is visible (paper §3.5, scenario S2).
+        budget_overflows: list[Dict[str, Any]] = []
+        relax_penalty = 0.0
+        if relaxed_mode:
+            fracs = []
+            for i, d_km in enumerate(dists):
+                budget_km = budget_km_list[i] if i < len(budget_km_list) else 0.0
+                if budget_km > 0 and d_km > budget_km:
+                    over_mi = (d_km - budget_km) / 1.60934
+                    who = _role_label(participant_labels[i]) if i < len(participant_labels) else f"Person {i + 1}"
+                    budget_overflows.append({"who": who, "over_miles": round(over_mi, 1)})
+                    fracs.append((d_km - budget_km) / budget_km)
+            if fracs:
+                relax_penalty = min(1.0, sum(fracs) / len(loc_objs))
+        c.relaxation_penalty = round(relax_penalty, 4)
+        c.budget_overflows = budget_overflows
         c.score_breakdown = {
             "distance": round(distance_score, 4),
             "group_fairness": round(fairness_score, 4),
@@ -1817,7 +1855,10 @@ def _compute_room_recommendations(room_id: str) -> Dict[str, Any]:
             "crowd": round(crowd_score, 4),
             "ambiance_fit": round(ambiance_score, 4),
         }
-        c.final_score = 0.30 * fairness_score + 0.20 * distance_score + 0.22 * rating_score + 0.16 * crowd_score + 0.12 * ambiance_score
+        if relax_penalty > 0:
+            c.score_breakdown["relaxation_penalty"] = round(relax_penalty, 4)
+        positive = 0.20 * (fairness_score + distance_score + rating_score + crowd_score + ambiance_score)
+        c.final_score = max(0.0, positive - 0.20 * relax_penalty)
     candidates.sort(key=lambda x: x.final_score, reverse=True)
     candidates = _apply_business_meeting_fit(candidates, business_context)
     _attach_parking_recommendations(candidates[:5], engine)
@@ -2060,9 +2101,9 @@ def _compute_direct_recommendations() -> Dict[str, Any]:
         loc_b,
         center,
         candidates,
-        w_dist=0.34,
-        w_rating=0.25,
-        w_pref=0.21,
+        w_dist=1/3,
+        w_rating=1/3,
+        w_pref=1/3,
         time_slots=selected_slots,
         availability={
             "a": slots_a,
@@ -2361,12 +2402,12 @@ def _build_recommendation_reason(c: Any, summary: Dict[str, Any]) -> str:
     severe_time_gap = bool(getattr(c, "severe_time_gap", False))
 
     if fairness < 3:
-        parts.append("commute times are nearly identical for both")
+        parts.append("commute times are nearly identical across participants")
     elif fairness < 8:
         parts.append(f"commute times differ by about {fairness:.0f} min")
 
     if in_iso:
-        parts.append("inside the area both can reasonably reach")
+        parts.append("inside the area everyone can reasonably reach")
     elif search_area_mode == "union_fallback":
         parts.append("ranges didn't overlap, so picked from the combined reachable area")
 
@@ -2383,10 +2424,8 @@ def _build_recommendation_reason(c: Any, summary: Dict[str, Any]) -> str:
         parts.append(f"suggested arrival time: {best_time}")
 
     ambiance_fit = float(bd.get("ambiance_fit", 0))
-    pref_a = summary.get("prefs_a", {}).get("ambiance_preference", "balanced")
-    pref_b = summary.get("prefs_b", {}).get("ambiance_preference", "balanced")
     if ambiance_fit >= 0.75:
-        parts.append(f"vibe matches both preferences ({_AMBIANCE_LABEL.get(pref_a, pref_a)} / {_AMBIANCE_LABEL.get(pref_b, pref_b)})")
+        parts.append("vibe matches the group's ambiance preference")
 
     business_fit = float(bd.get("business_fit", 0))
     if business_fit >= 0.65:
@@ -2429,6 +2468,7 @@ def _serialise_candidates_for_vote(
             "severe_time_gap": bool(getattr(c, "severe_time_gap", False)),
             "in_isochrone_intersection": bool(getattr(c, "in_isochrone_intersection", False)),
             "search_area_mode": getattr(c, "search_area_mode", "intersection"),
+            "budget_overflows": list(getattr(c, "budget_overflows", []) or []),
             "time_conflict": bool(getattr(c, "time_conflict", False)),
             "venue_status": str(ws.get("status", "uncertain")),
             "score_breakdown": {k: round(float(v), 4) for k, v in bd.items()},
@@ -2479,6 +2519,7 @@ _SCORE_BREAKDOWN_LABELS = {
     "time_vote": "Time votes",
     "crowd": "Not crowded",
     "ambiance_fit": "Ambiance fit",
+    "relaxation_penalty": "Relaxation penalty",
 }
 _QUEUE_LABEL = {"low": "Low", "medium": "Medium", "high": "High", "unknown": "Unknown"}
 _STATUS_LABEL = {"open": "🟢 Open", "closed": "🔴 Closed", "uncertain": "🟡 Uncertain"}
@@ -2553,7 +2594,14 @@ def _render_candidate_cards(candidates: list[Dict[str, Any]]) -> None:
             elif c.get("best_time_slot"):
                 st.caption(f"Suggested time: {c['best_time_slot']}")
             if c.get("search_area_mode") == "union_fallback":
-                st.caption("Reachability note: the two ranges didn't overlap, so this venue comes from the combined area.")
+                st.caption("Reachability note: the ranges didn't overlap, so this venue comes from the combined (relaxed) area.")
+                overflows = c.get("budget_overflows", []) or []
+                if overflows:
+                    over_txt = ", ".join(
+                        f"{html.escape(str(o.get('who', '?')))} +{float(o.get('over_miles', 0)):.1f} mi"
+                        for o in overflows
+                    )
+                    st.caption(f"⚠ Budgets exceeded (relaxation penalty applies): {over_txt}")
 
             # Score breakdown — render whatever components this flow produced.
             bd = c.get("score_breakdown", {}) or {}
@@ -5633,9 +5681,12 @@ _RIVERSIDE_PARTICIPANTS: list[Dict[str, Any]] = [
 # SIGSPATIAL 2026 conference scenario: three real hotels near the Riverside
 # downtown convention area where conference attendees typically stay.
 _SIGSPATIAL2026_HOTELS: list[Dict[str, Any]] = [
-    {"name": "Riverside Marriott",   "lat": 33.9837, "lon": -117.3729},  # 3400 Market St
-    {"name": "Mission Inn",          "lat": 33.9831, "lon": -117.3719},  # 3649 Mission Inn Ave
-    {"name": "Hampton Inn (UCR)",    "lat": 33.9743, "lon": -117.3550},  # 1620 University Ave
+    {"name": "Riverside Marriott", "lat": 33.9837, "lon": -117.3729,  # 3400 Market St
+     "prefs": {"travel_mode": "walk", "distance_miles": 3}},
+    {"name": "Mission Inn", "lat": 33.9831, "lon": -117.3719,  # 3649 Mission Inn Ave
+     "prefs": {"travel_mode": "transit", "distance_miles": 10}},
+    {"name": "Hampton Inn (UCR)", "lat": 33.9743, "lon": -117.3550,  # 1620 University Ave
+     "prefs": {"travel_mode": "drive", "distance_miles": 15}},
 ]
 
 # Default per-participant preferences for demo seeds. Picks five 30-min
@@ -5680,6 +5731,19 @@ _DEMO_SEED_PRESETS["sigspatial2026"] = {
     "label": "SIGSPATIAL 2026 attendees (3 hotels near venue)",
 }
 
+# S2 (relaxed mode): two attendees start far apart with tight commute budgets,
+# so their reachable regions do not overlap and the pipeline falls back to the
+# union of reachable regions, applying the relaxation penalty P(c_j).
+_DEMO_SEED_PRESETS["sigspatial2026_s2"] = {
+    "flow": "room",
+    "participants": [
+        {"name": "Downtown Riverside", "lat": 33.9806, "lon": -117.3755},
+        {"name": "Arlington, Riverside", "lat": 33.9200, "lon": -117.4300},
+    ],
+    "prefs_override": {"distance_miles": 2, "travel_mode": "drive"},
+    "label": "S2 relaxed mode (two far-apart participants, tight budgets)",
+}
+
 
 def _seed_direct_flow(preset: Dict[str, Any]) -> None:
     """Seed Person A + Person B for the direct two-person flow."""
@@ -5703,17 +5767,23 @@ def _seed_room_flow(seed_key: str, preset: Dict[str, Any]) -> None:
     participants = preset["participants"]
     room_id = f"demo-{seed_key}"
     n = len(participants)
+    # Per-scenario preference overrides (e.g., tight commute budgets for the
+    # relaxed-mode S2 scenario) merged onto the shared demo defaults.
+    prefs_override = preset.get("prefs_override", {})
 
     # Lock the participant count up front so anyone who joins this room mid-demo
     # sees the right Person 1..N slots.
     _set_room_participant_count(room_id, n)
     for idx, p in enumerate(participants, start=1):
         role_key = f"P{idx}"
+        prefs = dict(_DEFAULT_DEMO_PREFS)
+        prefs.update(prefs_override)
+        prefs.update(p.get("prefs", {}))
         _persist_user_profile(room_id, role_key, p["name"])
         _persist_user_location(
             room_id, role_key, Location(float(p["lat"]), float(p["lon"])), "demo-seed"
         )
-        _persist_user_preferences(room_id, role_key, dict(_DEFAULT_DEMO_PREFS))
+        _persist_user_preferences(room_id, role_key, prefs)
 
     st.session_state.room_id = room_id
     st.session_state.user_role = "P1"

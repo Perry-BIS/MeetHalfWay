@@ -19,6 +19,7 @@ import os
 import random
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -535,9 +536,9 @@ class MeetHalfwayRecommender:
             va = self._normalize_vote((time_votes or {}).get("a", {}).get(slot, 1.0))
             vb = self._normalize_vote((time_votes or {}).get("b", {}).get(slot, 1.0))
             agreement_score = 1.0 - abs(va - vb)
-            vote_score = 0.7 * ((va + vb) / 2.0) + 0.3 * agreement_score
+            vote_score = 0.5 * ((va + vb) / 2.0) + 0.5 * agreement_score
 
-            slot_score = 0.65 * overlap + 0.35 * vote_score
+            slot_score = 0.5 * overlap + 0.5 * vote_score
             if slot_score > best_score:
                 best_score = slot_score
                 best_slot = slot
@@ -573,7 +574,7 @@ class MeetHalfwayRecommender:
         b_score = _pick(b_votes)
         mean_score = (a_score + b_score) / 2.0
         agreement_score = 1.0 - abs(a_score - b_score)
-        return 0.65 * mean_score + 0.35 * agreement_score
+        return 0.5 * mean_score + 0.5 * agreement_score
 
     # -----------------------------------------------------------------------
     # Geometry helpers
@@ -919,20 +920,31 @@ class MeetHalfwayRecommender:
         the per-participant reachable polygon list (aligned with ``locations``).
         """
         t_default = transport or self.transport
-        regions: List[Any] = []
         use_distance = miles_list is not None
         use_per_user_mode = (
             transport_list is not None
             and len(transport_list) == len(locations)
         )
-        for i, loc in enumerate(locations):
+
+        def _fetch_region(i: int) -> Any:
+            loc = locations[i]
             t_i = transport_list[i] if use_per_user_mode else t_default
             if use_distance:
                 miles = (miles_list[i] if i < len(miles_list) else None) or 15.0
-                regions.append(self._isochrone(loc, float(miles), t_i, range_type="distance"))
-            else:
-                minutes = (minutes_list[i] if minutes_list and i < len(minutes_list) else None) or self.isochrone_minutes
-                regions.append(self._isochrone(loc, minutes, t_i, range_type="time"))
+                return self._isochrone(loc, float(miles), t_i, range_type="distance")
+            minutes = (minutes_list[i] if minutes_list and i < len(minutes_list) else None) or self.isochrone_minutes
+            return self._isochrone(loc, minutes, t_i, range_type="time")
+
+        # Each participant's isochrone is an independent network call, so fetch
+        # them concurrently: this collapses stage-1 latency from the sum of all
+        # requests to the slowest single request. ``map`` preserves input order,
+        # so ``regions`` stays aligned with ``locations``.
+        n_loc = len(locations)
+        if n_loc <= 1:
+            regions: List[Any] = [_fetch_region(i) for i in range(n_loc)]
+        else:
+            with ThreadPoolExecutor(max_workers=min(n_loc, 8)) as executor:
+                regions = list(executor.map(_fetch_region, range(n_loc)))
         valid = [r for r in regions if r is not None and not getattr(r, "is_empty", False)]
         if len(valid) < 2:
             return {"geometry": None, "overlap_exists": False, "mode": "unknown", "regions": regions}
@@ -1216,15 +1228,20 @@ class MeetHalfwayRecommender:
         area_mode: str = "intersection",
     ) -> None:
         """Tag each candidate with whether it falls inside the isochrone intersection."""
+        # Strict-mode markers: the room flow tags the shared region as
+        # "isochrone" and the 2-person flow as "intersection"; both mean every
+        # retrieved candidate sits inside the strict shared region. "union_fallback"
+        # is the relaxed mode, where membership is not guaranteed.
+        strict_modes = ("intersection", "isochrone")
         if intersection is None or not HAS_SHAPELY:
             for c in candidates:
                 c.search_area_mode = area_mode
-                c.in_isochrone_intersection = area_mode == "intersection"
+                c.in_isochrone_intersection = area_mode in strict_modes
             return
         for c in candidates:
             pt = Point(c.lon, c.lat)
             c.search_area_mode = area_mode
-            c.in_isochrone_intersection = area_mode == "intersection" and intersection.contains(pt)
+            c.in_isochrone_intersection = area_mode in strict_modes and intersection.contains(pt)
             verdict = "inside" if c.in_isochrone_intersection else "outside"
             logger.debug("%s  %s", verdict, c.name)
 
@@ -2090,7 +2107,7 @@ class MeetHalfwayRecommender:
                     rating_norm = _clip01(rating / 5.0)
                     # review-count confidence adjustment: avoid inflating scores from few reviews
                     review_conf = _clip01(math.log1p(review_count) / math.log(501))
-                    blended = _clip01(0.8 * rating_norm + 0.2 * review_conf)
+                    blended = _clip01(0.5 * rating_norm + 0.5 * review_conf)
 
                     return {
                         "matched": True,
@@ -2354,8 +2371,8 @@ class MeetHalfwayRecommender:
             dist_component = 1.0 - min(c.distance_to_center_km / max_center_dist, 1.0)
             rating_component = min(max(c.rating_proxy, 0.0), 1.0)
             pref_component = _clip01(
-                0.6 * max(0.0, 1.0 - fairness_penalty / 5.0)
-                + 0.4 * fairness_balance
+                0.5 * max(0.0, 1.0 - fairness_penalty / 5.0)
+                + 0.5 * fairness_balance
             )
 
             (
@@ -2407,11 +2424,11 @@ class MeetHalfwayRecommender:
             iso_bonus = 0.4 if c.in_isochrone_intersection else -0.6
 
             spatiotemporal_bonus = (
-                0.23 * c.radius_tolerance_score
-                + 0.23 * c.availability_overlap
-                + 0.18 * c.venue_popularity_score
+                0.20 * c.radius_tolerance_score
+                + 0.20 * c.availability_overlap
+                + 0.20 * c.venue_popularity_score
                 + 0.20 * c.mutual_vote_score
-                + 0.16 * c.time_vote_score
+                + 0.20 * c.time_vote_score
                 - 0.5
             )
 
@@ -3093,7 +3110,7 @@ async def async_main(args: argparse.Namespace) -> None:
     tired_person = args.tired.lower() if args.tired else None
     scored = engine.score_candidates(
         a, b, center, raw_candidates,
-        w_dist=0.35, w_rating=0.30, w_pref=0.35,
+        w_dist=1/3, w_rating=1/3, w_pref=1/3,
         tired_person=tired_person,
     )
     top_items = scored[: args.top_k]
