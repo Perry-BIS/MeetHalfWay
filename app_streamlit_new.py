@@ -852,127 +852,6 @@ def _room_preferred_venue(summary: Dict[str, Any]) -> str:
     return "restaurant"
 
 
-def _build_room_recommendation(room_id: str, force: bool = False) -> Optional[Dict[str, Any]]:
-    room_key = str(room_id or "").strip()
-    if not room_key:
-        return None
-
-    if not force:
-        cached = _load_room_recommendation(room_key)
-        if cached and cached.get("status") == "ready":
-            return cached
-
-    summary = _preference_summary(room_key)
-    if not (summary.get("both_preferences_ready") and summary.get("both_locations_ready") and summary.get("weighted_center")):
-        return None
-
-    try:
-        # Multi-person: aggregate everyone's location and preferences
-        all_prefs = summary.get("all_prefs", [])
-        all_locs = summary.get("all_locs", [])
-        n = len(all_prefs)
-        if n < 2:
-            return None
-        # Aggregate venue_type and cuisine (take the first / merge)
-        venue_type = None
-        for p in all_prefs:
-            if p.get("venue_type"):
-                venue_type = p.get("venue_type")
-                break
-        if not venue_type:
-            venue_type = "restaurant"
-        cuisine_keyword = ""
-        for p in all_prefs:
-            if p.get("cuisine"):
-                cuisine_keyword = p.get("cuisine")
-                break
-
-        # Distance radius (max / average)
-        distances = [float(p.get("distance_miles", 15)) for p in all_prefs]
-        radii_km = [max(1.0, d) * 1.60934 for d in distances]
-        # Location objects
-        loc_objs = [Location(float(l["lat"]), float(l["lon"])) for l in all_locs]
-        center = Location(float(summary["weighted_center"]["lat"]), float(summary["weighted_center"]["lon"]))
-
-        engine = build_engine_from_env(
-            transport="transit", use_yelp=False, max_enriched_candidates=2,
-        )
-
-        # Multi-person shared area (radius intersection / center for now)
-        # Simple aggregation here; could extend to a full multi-circle intersection
-        intersection = None
-        if hasattr(engine, "get_intersection_from_radii"):
-            # if the engine supports multiple points
-            try:
-                intersection = engine.get_intersection_from_radii(*loc_objs, *radii_km)
-            except Exception:
-                intersection = None
-        candidates = engine.search_nearby_venues(
-            center=center,
-            venue_type=venue_type,
-            keyword=cuisine_keyword,
-            limit=engine.recommend_search_limit(5),
-            intersection=intersection,
-        )
-        if not candidates and venue_type != "restaurant":
-            candidates = engine.search_nearby_venues(
-                center=center,
-                venue_type="restaurant",
-                keyword=cuisine_keyword,
-                limit=engine.recommend_search_limit(5),
-                intersection=intersection,
-            )
-
-        if not candidates:
-            failed = {
-                "status": "failed",
-                "generated_at": _utc_timestamp(),
-                "message": "No nearby places found yet. Try widening distance preferences or changing venue type.",
-            }
-            _save_room_recommendation(room_key, failed)
-            return failed
-
-        scored = []
-        for c in candidates:
-            place_loc = Location(float(c.lat), float(c.lon))
-            # Multi-person fairness: max - min distance
-            dists = [engine.haversine_km(loc, place_loc) for loc in loc_objs]
-            fairness_gap = max(dists) - min(dists) if len(dists) > 1 else 0
-            scored.append(
-                {
-                    "name": c.name,
-                    "lat": float(c.lat),
-                    "lon": float(c.lon),
-                    "place_name": c.place_name,
-                    "distance_to_center_km": float(c.distance_to_center_km),
-                    "fairness_gap_km": fairness_gap,
-                }
-            )
-
-        scored.sort(key=lambda x: (x["fairness_gap_km"], x["distance_to_center_km"]))
-        top_items = scored[:5]
-
-        payload = {
-            "status": "ready",
-            "generated_at": _utc_timestamp(),
-            "room_id": room_key,
-            "venue_type": venue_type,
-            "keyword": cuisine_keyword,
-            "weighted_center": {"lat": center.lat, "lon": center.lon},
-            "items": top_items,
-        }
-        _save_room_recommendation(room_key, payload)
-        return payload
-    except Exception as exc:
-        failed = {
-            "status": "failed",
-            "generated_at": _utc_timestamp(),
-            "message": f"Recommendation failed: {exc}",
-        }
-        _save_room_recommendation(room_key, failed)
-        return failed
-
-
 def _build_half_hour_slots() -> list[str]:
     slots = []
     for hour in range(24):
@@ -4404,9 +4283,18 @@ def render_check_result_page():
             st.warning("Waiting for all participants to submit location and preferences before recommendations can be generated.")
 
         rec_cached = _load_room_recommendation(room_id)
-        recommendation_state = _compute_room_recommendations(room_id)
-        if rec_cached and rec_cached.get("status") == "ready" and rec_cached.get("candidates") and rec_cached.get("recommendation_text"):
-            # Already have a vote-ready candidate list saved
+        cache_ready = bool(
+            rec_cached
+            and rec_cached.get("status") == "ready"
+            and rec_cached.get("candidates")
+            and rec_cached.get("recommendation_text")
+        )
+        if cache_ready:
+            # A vote-ready result is already cached — serve it without recomputing.
+            # The cache is dropped automatically whenever anyone edits a location or
+            # preference (_invalidate_room_outputs), so a surviving "ready" entry
+            # always matches the current inputs. This is what stops the heavy
+            # pipeline from re-running on every rerun / refresh / poll.
             st.markdown("### Recommended Venues")
             _render_recommendation_warnings(rec_cached.get("recommendation_meta", {}))
             st.markdown("#### 🗺️ Shared reachable area & ranked venues")
@@ -4414,36 +4302,39 @@ def render_check_result_page():
             _render_recommendation_summary(rec_cached.get("recommendation_text", ""))
             _render_candidate_cards(rec_cached["candidates"])
             _render_vote_button(room_id)
-        elif recommendation_state["status"] == "ok":
-            st.markdown("### Recommended Venues")
-            scored = recommendation_state["recommendations"]
-            # Serialise to dicts and generate reasons, save for vote page
-            candidate_dicts = _serialise_candidates_for_vote(scored, recommendation_state.get("summary", {}))
-            _render_recommendation_warnings(recommendation_state.get("recommendation_meta", {}))
-            _save_room_recommendation(room_id, {
-                "status": "ready",
-                "generated_at": _utc_timestamp(),
-                "room_id": room_id,
-                "candidates": candidate_dicts,
-                "recommendation_meta": recommendation_state.get("recommendation_meta", {}),
-                "recommendation_text": recommendation_state.get("recommendation_text", ""),
-                "map_geometry": recommendation_state.get("map_geometry"),
-            })
-            st.markdown("#### 🗺️ Shared reachable area & ranked venues")
-            _render_result_map(recommendation_state.get("map_geometry"), candidate_dicts, key=f"result_map_{room_id}")
-            _render_recommendation_summary(recommendation_state.get("recommendation_text", ""))
-            _render_candidate_cards(candidate_dicts)
-            _render_vote_button(room_id)
-        elif recommendation_state["status"] == "no_candidates":
-            st.error("Everyone is ready, but no venue candidates were found in the shared area yet.")
-        elif recommendation_state["status"] == "no_open_candidates":
-            _render_recommendation_warnings(recommendation_state.get("recommendation_meta", {}))
-            st.error("We found places nearby, but none could be safely kept as open for the selected time. Please adjust the time and try again.")
-        elif recommendation_state["status"] == "too_far_for_recommendation":
-            _render_recommendation_warnings(recommendation_state.get("recommendation_meta", {}))
-            st.error("These two locations are too far apart for a fair shared recommendation under the current commute settings.")
-        elif rec_cached and rec_cached.get("status") == "failed":
-            st.warning(rec_cached.get("message", "Recommendation could not be generated yet."))
+        else:
+            with st.spinner("Searching for venues and generating recommendations..."):
+                recommendation_state = _compute_room_recommendations(room_id)
+            if recommendation_state["status"] == "ok":
+                st.markdown("### Recommended Venues")
+                scored = recommendation_state["recommendations"]
+                # Serialise to dicts and generate reasons, save for vote page
+                candidate_dicts = _serialise_candidates_for_vote(scored, recommendation_state.get("summary", {}))
+                _render_recommendation_warnings(recommendation_state.get("recommendation_meta", {}))
+                _save_room_recommendation(room_id, {
+                    "status": "ready",
+                    "generated_at": _utc_timestamp(),
+                    "room_id": room_id,
+                    "candidates": candidate_dicts,
+                    "recommendation_meta": recommendation_state.get("recommendation_meta", {}),
+                    "recommendation_text": recommendation_state.get("recommendation_text", ""),
+                    "map_geometry": recommendation_state.get("map_geometry"),
+                })
+                st.markdown("#### 🗺️ Shared reachable area & ranked venues")
+                _render_result_map(recommendation_state.get("map_geometry"), candidate_dicts, key=f"result_map_{room_id}")
+                _render_recommendation_summary(recommendation_state.get("recommendation_text", ""))
+                _render_candidate_cards(candidate_dicts)
+                _render_vote_button(room_id)
+            elif recommendation_state["status"] == "no_candidates":
+                st.error("Everyone is ready, but no venue candidates were found in the shared area yet.")
+            elif recommendation_state["status"] == "no_open_candidates":
+                _render_recommendation_warnings(recommendation_state.get("recommendation_meta", {}))
+                st.error("We found places nearby, but none could be safely kept as open for the selected time. Please adjust the time and try again.")
+            elif recommendation_state["status"] == "too_far_for_recommendation":
+                _render_recommendation_warnings(recommendation_state.get("recommendation_meta", {}))
+                st.error("These two locations are too far apart for a fair shared recommendation under the current commute settings.")
+            elif rec_cached and rec_cached.get("status") == "failed":
+                st.warning(rec_cached.get("message", "Recommendation could not be generated yet."))
     
     if st.button("🔄 Refresh Results", use_container_width=True):
         st.rerun()
@@ -5567,6 +5458,7 @@ def render_user_info_step2_page():
                     "candidates": candidate_dicts,
                     "recommendation_meta": rec_state.get("recommendation_meta", {}),
                     "recommendation_text": rec_state.get("recommendation_text", ""),
+                    "map_geometry": rec_state.get("map_geometry"),
                 })
                 st.session_state["last_preferences_submit_message"] = "Recommendations generated! Time to vote for your favourites."
                 st.session_state["last_preferences_submit_level"] = "success"
