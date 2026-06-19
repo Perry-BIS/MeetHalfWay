@@ -220,6 +220,49 @@ def _get_room_record(room_id: str) -> Dict[str, Any]:
     return state.get(room_key, {"participants": {}})
 
 
+def _room_slot_occupancy(room_id: str, participant_count: int) -> Dict[str, Dict[str, Any]]:
+    """Report, for each slot P1..Pn, whether it's already claimed and by whom.
+
+    A slot counts as claimed once that participant has saved a name, a location,
+    or any preferences — i.e. someone has actually started filling it in. Keys
+    are returned in slot order (P1, P2, ...) so callers can pick the first free
+    one deterministically.
+    """
+    record = _get_room_record(room_id) if room_id else {"participants": {}}
+    participants = _canonical_room_participants(record)
+    total = max(2, min(MAX_PARTICIPANTS, int(participant_count or 2)))
+    occupancy: Dict[str, Dict[str, Any]] = {}
+    for i in range(1, total + 1):
+        key = f"P{i}"
+        rec = participants.get(key, {}) or {}
+        name = str((rec.get("profile") or {}).get("name", "")).strip()
+        occupancy[key] = {
+            "occupied": bool(name or rec.get("location") or rec.get("preferences")),
+            "name": name,
+        }
+    return occupancy
+
+
+def _first_available_slot(occupancy: Dict[str, Dict[str, Any]]) -> str:
+    """Lowest-numbered slot nobody has claimed yet; last slot if all are taken."""
+    last_key = "P2"
+    for key, info in occupancy.items():
+        last_key = key
+        if not info.get("occupied"):
+            return key
+    return last_key
+
+
+def _slot_option_label(role_key: str, occupancy: Dict[str, Dict[str, Any]]) -> str:
+    """Dropdown label for a role option, annotated with who (if anyone) holds it."""
+    base = _role_label(role_key)
+    info = occupancy.get(_normalize_user_role(role_key), {})
+    if not info.get("occupied"):
+        return f"{base} · available"
+    name = info.get("name")
+    return f"{base} · taken by {name}" if name else f"{base} · taken"
+
+
 def _payload_without_timestamps(payload: Any) -> Any:
     if isinstance(payload, dict):
         return {
@@ -4118,16 +4161,22 @@ def render_join_link_page():
             room_summary = _preference_summary(room_from_url)
             participant_count = int(room_summary.get("participant_count", 2) or 2)
             options = _role_options(participant_count)
-            default_role = st.session_state.get("room_link_role", "Person 2")
-            if default_role not in options:
-                default_role = options[min(1, len(options) - 1)]
+            occupancy = _room_slot_occupancy(room_from_url, participant_count)
+            # First render lands new joiners on the first unclaimed slot, so they
+            # don't all default to "Person 2" and overwrite each other. Once
+            # someone has explicitly picked a slot, their choice (in session) wins.
+            default_role = st.session_state.get("room_link_role")
+            if not default_role or default_role not in options:
+                default_role = _role_label(_first_available_slot(occupancy))
             selected_role = st.selectbox(
                 "I am joining as",
                 options,
                 index=options.index(default_role),
                 key="room_link_role",
+                format_func=lambda r: _slot_option_label(r, occupancy),
             )
             role_key = _normalize_user_role(selected_role)
+            slot_info = occupancy.get(role_key, {})
 
             saved_name = _load_saved_profile_name(room_from_url, role_key)
             previous_role_key = st.session_state.get("room_link_name_role")
@@ -4157,6 +4206,20 @@ def render_join_link_page():
                 st.caption("Use this if you're reopening the room as the creator or continuing Person 1's side.")
             else:
                 st.caption(f"Use this if you're joining or continuing {selected_role}'s side.")
+
+            if slot_info.get("occupied"):
+                taker = slot_info.get("name")
+                if taker:
+                    st.warning(
+                        f"⚠️ {selected_role} is already taken by **{taker}**. "
+                        "Continue only if that's you (you'll pick up their saved info) — "
+                        "otherwise choose a slot marked *available* above."
+                    )
+                else:
+                    st.warning(
+                        f"⚠️ {selected_role} is already in use. Continue only if this is "
+                        "your slot; otherwise choose one marked *available* above."
+                    )
 
             if saved_name or saved_location or saved_preferences:
                 status_bits = []
@@ -4215,7 +4278,23 @@ def render_join_link_page():
 
             existing_summary = _preference_summary(room_id) if room_id else {"participant_count": st.session_state.get("participant_count", 2)}
             participant_count = int(existing_summary.get("participant_count", 2) or 2)
-            your_role = st.selectbox("Your Role", _role_options(participant_count))
+            role_options = _role_options(participant_count)
+            occupancy = _room_slot_occupancy(room_id, participant_count) if room_id else {}
+            # Default joiners to the first free slot once the room is known, so
+            # they don't all land on the same number and overwrite each other.
+            default_role = st.session_state.get("joiner_role")
+            if not default_role or default_role not in role_options:
+                default_role = (
+                    _role_label(_first_available_slot(occupancy)) if occupancy
+                    else role_options[min(1, len(role_options) - 1)]
+                )
+            your_role = st.selectbox(
+                "Your Role",
+                role_options,
+                index=role_options.index(default_role),
+                key="joiner_role",
+                format_func=(lambda r: _slot_option_label(r, occupancy)) if occupancy else (lambda r: r),
+            )
             role_key = _normalize_user_role(your_role)
             saved_name = _load_saved_profile_name(room_id, role_key) if room_id else ""
             saved_location = _load_saved_location(room_id, role_key) if room_id else None
@@ -4235,6 +4314,19 @@ def render_join_link_page():
             if room_id:
                 st.success(f"✅ Room ID: **{room_id}**")
                 st.info(f"👤 **Role:** {your_role}\n\n**Name:** {your_name if your_name else '(Not entered)'}")
+                joiner_slot_info = occupancy.get(role_key, {})
+                if joiner_slot_info.get("occupied"):
+                    taker = joiner_slot_info.get("name")
+                    if taker:
+                        st.warning(
+                            f"⚠️ {your_role} is already taken by **{taker}**. Continue only "
+                            "if that's you; otherwise pick a slot marked *available*."
+                        )
+                    else:
+                        st.warning(
+                            f"⚠️ {your_role} is already in use. Continue only if this is your "
+                            "slot; otherwise pick one marked *available*."
+                        )
                 if saved_name or saved_location or saved_preferences:
                     status_bits = []
                     if saved_name:
