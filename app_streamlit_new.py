@@ -3642,6 +3642,21 @@ def _reverse_geocode(lat: float, lon: float) -> str:
 def render_home_page():
     """Render the home introduction page with embedded role selection."""
 
+    # Home is a single-screen landing: lock it to the viewport so it never
+    # scrolls vertically, and trim the default block padding that left an
+    # empty strip at the bottom. Scoped to this page only — the <style> tag
+    # exists in the DOM solely while the home page is rendered, so the normal
+    # scrolling behaviour returns automatically on every other page.
+    st.markdown(
+        """
+        <style>
+        [data-testid="stMain"] { overflow-y: hidden !important; }
+        [data-testid="stMainBlockContainer"] { padding-bottom: 0.75rem !important; }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
     pending_choice = st.session_state.get("home_pending_action")
     action_pages = {
         "generate_link": "generate_link",
@@ -5972,9 +5987,12 @@ def main():
         st.session_state.current_page = "home"
         st.rerun()
     
-    # Render navigation
-    render_navigation()
-    
+    # Render navigation. The home page draws its own "Next →" button at the top,
+    # so the footer nav row here is redundant — skip it to drop the extra strip
+    # at the bottom of the landing page.
+    if current_page != "home":
+        render_navigation()
+
     # Note: Side buttons are a bit tricky in Streamlit; this is a basic approach
     # For full functionality, consider using custom HTML/JS or iframe
 
