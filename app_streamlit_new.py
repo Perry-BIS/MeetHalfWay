@@ -10,7 +10,7 @@ except ModuleNotFoundError:
     import tomli as tomllib
 from pathlib import Path
 from datetime import datetime
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Callable, Dict, Optional, Tuple
 from urllib.parse import parse_qs, quote, urlparse
 
 import folium
@@ -1548,8 +1548,75 @@ def _apply_business_meeting_fit(candidates: list, is_business: bool) -> list:
     return candidates
 
 
-def _compute_room_recommendations(room_id: str) -> Dict[str, Any]:
-    """Generate recommendations for a room with 2-5 participants."""
+# Ordered stages of the recommendation pipeline, shown to the user as a live
+# progress stepper while _compute_room_recommendations runs (which can take
+# 30-60s on the first compute because of the external isochrone / venue / web
+# lookups). Labels are intentionally user-facing, not internal function names.
+RECOMMENDATION_PROGRESS_STEPS = [
+    "Mapping each person's reachable area",
+    "Searching venues in the shared area",
+    "Checking opening hours & live details",
+    "Scoring & ranking for fairness",
+    "Finalizing the shortlist & map",
+]
+
+
+def _render_progress_steps(placeholder, current: int, *, done: bool = False) -> None:
+    """Draw the recommendation-generation stepper into a Streamlit placeholder.
+
+    ``current`` is the 0-based index of the step currently running; earlier steps
+    render as complete, later ones as pending. ``done=True`` marks every step
+    complete. Streamlit flushes element updates to the browser during a script
+    run, so calling this from a progress callback animates the steps live.
+    """
+    total = len(RECOMMENDATION_PROGRESS_STEPS)
+    rows = []
+    for i, label in enumerate(RECOMMENDATION_PROGRESS_STEPS):
+        if done or i < current:
+            icon, color, weight, opacity = "✅", "#157347", "600", "1"
+        elif i == current:
+            icon, color, weight, opacity = "⏳", "#2563d9", "700", "1"
+        else:
+            icon, color, weight, opacity = "⚪", "#9aa6b2", "500", "0.55"
+        rows.append(
+            f"<div style='display:flex;align-items:center;gap:10px;padding:5px 0;opacity:{opacity};'>"
+            f"<span style='font-size:1.05rem;line-height:1;'>{icon}</span>"
+            f"<span style='color:{color};font-weight:{weight};font-size:0.97rem;'>{label}</span>"
+            f"</div>"
+        )
+    pct = 100 if done else int(round(min(current + 0.5, total) / total * 100))
+    header = "✅ Recommendations ready" if done else "🧭 Generating recommendations…"
+    bar = (
+        "<div style='height:8px;border-radius:999px;background:rgba(120,150,190,0.18);"
+        "overflow:hidden;margin:8px 0 14px;'>"
+        f"<div style='height:100%;width:{pct}%;background:linear-gradient(90deg,#377dff,#40b7ff);"
+        "transition:width .35s ease;'></div></div>"
+    )
+    html = (
+        "<div style='background:linear-gradient(135deg,rgba(255,247,240,0.96),rgba(240,247,255,0.96));"
+        "border:1px solid rgba(80,130,200,0.20);border-radius:14px;padding:16px 18px;margin:6px 0 12px;'>"
+        f"<div style='font-weight:800;color:#18344f;margin-bottom:2px;'>{header}</div>"
+        f"{bar}{''.join(rows)}"
+        "</div>"
+    )
+    placeholder.markdown(html, unsafe_allow_html=True)
+
+
+def _compute_room_recommendations(
+    room_id: str, progress_cb: Optional[Callable[[int], None]] = None
+) -> Dict[str, Any]:
+    """Generate recommendations for a room with 2-5 participants.
+
+    ``progress_cb``, if given, is called with the 0-based index of each pipeline
+    stage as it begins (see RECOMMENDATION_PROGRESS_STEPS), so the UI can show a
+    live progress stepper.
+    """
+    def _progress(step: int) -> None:
+        if progress_cb is not None:
+            try:
+                progress_cb(step)
+            except Exception:
+                pass
     summary = _preference_summary(room_id)
     if not (summary["both_preferences_ready"] and summary["both_locations_ready"] and summary["weighted_center"]):
         return {"status": "incomplete", "summary": summary}
@@ -1590,6 +1657,7 @@ def _compute_room_recommendations(room_id: str) -> Dict[str, Any]:
     # region, which bounds the strict intersection and pulls the recommendation
     # toward the least-mobile participant.
     participant_modes = [normalize_transport_mode(p.get("travel_mode")) for p in all_prefs]
+    _progress(0)
     iso_area = engine.get_multi_isochrone_search_area(
         loc_objs, miles_list=miles_list, transport=transport, transport_list=participant_modes
     )
@@ -1638,6 +1706,7 @@ def _compute_room_recommendations(room_id: str) -> Dict[str, Any]:
         venue_types = [v for v in SHOPPING_VENUE_PRIORITY if v in venue_types] + [v for v in SHOPPING_VENUE_PRIORITY if v not in venue_types]
     venue_types = venue_types[:3] if venue_types else ["restaurant"]
 
+    _progress(1)
     dedupe: Dict[Tuple[str, float, float], Any] = {}
     for venue_type in venue_types:
         for item in _search_with_cuisine_fallback(engine, center, venue_type, 8, intersection, cuisine_plan):
@@ -1659,6 +1728,7 @@ def _compute_room_recommendations(room_id: str) -> Dict[str, Any]:
     selected_slots = overlap_slots or sorted(set.union(*all_slots))
     time_label = _format_time_slot_label(selected_slots[0]) if selected_slots else "Flexible"
 
+    _progress(2)
     # Strict mode: only confirmed-open venues should reach the user, so enrich
     # every candidate (override the low_cost_mode cap) before the status filter.
     engine.max_enriched_candidates = None
@@ -1678,6 +1748,7 @@ def _compute_room_recommendations(room_id: str) -> Dict[str, Any]:
     if business_context:
         _attach_parking_recommendations(candidates, engine, limit_per_venue=2)
 
+    _progress(3)
     max_center_dist = max((float(getattr(c, "distance_to_center_km", 0.0) or 0.0) for c in candidates), default=1.0) or 1.0
     ambiance_targets = {"quiet": 0.22, "balanced": 0.55, "lively": 0.82}
     target_ambiance = 0.22 if business_context else sum(ambiance_targets.get(p.get("ambiance_preference", "balanced"), 0.55) for p in all_prefs) / n
@@ -1765,6 +1836,7 @@ def _compute_room_recommendations(room_id: str) -> Dict[str, Any]:
             f"Cuisine: {cuisine_label}. Average budget: ${budget:.0f} per person."
         )
 
+    _progress(4)
     participant_keys = summary.get("keys", []) or [f"P{i + 1}" for i in range(len(loc_objs))]
     map_geometry = _build_map_geometry(
         participants=[
@@ -4303,8 +4375,12 @@ def render_check_result_page():
             _render_candidate_cards(rec_cached["candidates"])
             _render_vote_button(room_id)
         else:
-            with st.spinner("Searching for venues and generating recommendations..."):
-                recommendation_state = _compute_room_recommendations(room_id)
+            progress_ph = st.empty()
+            _render_progress_steps(progress_ph, 0)
+            recommendation_state = _compute_room_recommendations(
+                room_id, progress_cb=lambda step: _render_progress_steps(progress_ph, step)
+            )
+            progress_ph.empty()
             if recommendation_state["status"] == "ok":
                 st.markdown("### Recommended Venues")
                 scored = recommendation_state["recommendations"]
@@ -5445,8 +5521,12 @@ def render_user_info_step2_page():
         st.session_state["last_preferences_submit_message"] = f"Preferences saved to room {room_id} for {_role_label(role_key)}."
         st.session_state["last_preferences_submit_level"] = "success"
         if updated_summary["both_preferences_ready"] and updated_summary["both_locations_ready"]:
-            with st.spinner("Everyone is ready - searching for venues and generating recommendations..."):
-                rec_state = _compute_room_recommendations(room_id)
+            progress_ph = st.empty()
+            _render_progress_steps(progress_ph, 0)
+            rec_state = _compute_room_recommendations(
+                room_id, progress_cb=lambda step: _render_progress_steps(progress_ph, step)
+            )
+            progress_ph.empty()
             if rec_state.get("status") == "ok":
                 candidate_dicts = _serialise_candidates_for_vote(
                     rec_state["recommendations"], rec_state.get("summary", {})
